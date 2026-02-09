@@ -1,0 +1,17 @@
+name = "Relevent"
+uuid = "f2345678-90ab-cdef-1234-567890123456"
+authors = ["Statistical Network Analysis with Julia"]
+version = "0.1.0"
+
+[deps]
+Network = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+REM = "f8e5b5a0-7c3d-4b5a-9c5e-1a2b3c4d5e6f"
+
+[compat]
+julia = "1.9"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
