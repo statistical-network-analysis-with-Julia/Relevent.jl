@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Getting Started · Relevent.jl</title><meta name="title" content="Getting Started · Relevent.jl"/><meta property="og:title" content="Getting Started · Relevent.jl"/><meta property="twitter:title" content="Getting Started · Relevent.jl"/><meta name="description" content="Documentation for Relevent.jl."/><meta property="og:description" content="Documentation for Relevent.jl."/><meta property="twitter:description" content="Documentation for Relevent.jl."/><meta property="og:url" content="https://Statistical-network-analysis-with-Julia.github.io/Relevent.jl/getting_started/"/><meta property="twitter:url" content="https://Statistical-network-analysis-with-Julia.github.io/Relevent.jl/getting_started/"/><link rel="canonical" href="https://Statistical-network-analysis-with-Julia.github.io/Relevent.jl/getting_started/"/><script data-outdated-warner src="../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL=".."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../assets/documenter.js"></script><script src="../search_index.js"></script><script src="../siteinfo.js"></script><script src="../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><a class="docs-logo" href="../"><img src="../assets/logo.svg" alt="Relevent.jl logo"/></a><div class="docs-package-name"><span class="docs-autofit"><a href="../">Relevent.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../">Home</a></li><li class="is-active"><a class="tocitem" href>Getting Started</a><ul class="internal"><li><a class="tocitem" href="#Installation"><span>Installation</span></a></li><li><a class="tocitem" href="#Basic-Workflow"><span>Basic Workflow</span></a></li><li><a class="tocitem" href="#Step-1:-Create-Event-Data"><span>Step 1: Create Event Data</span></a></li><li><a class="tocitem" href="#Step-2:-Track-Interaction-History"><span>Step 2: Track Interaction History</span></a></li><li><a class="tocitem" href="#Step-3:-Define-Advanced-Statistics"><span>Step 3: Define Advanced Statistics</span></a></li><li><a class="tocitem" href="#Step-4a:-Fit-a-Standard-REM"><span>Step 4a: Fit a Standard REM</span></a></li><li><a class="tocitem" href="#Step-4b:-Fit-an-Ordinal-BPM"><span>Step 4b: Fit an Ordinal BPM</span></a></li><li><a class="tocitem" href="#Step-4c:-Fit-a-Timing-Model"><span>Step 4c: Fit a Timing Model</span></a></li><li><a class="tocitem" href="#Step-5:-Interpret-Results"><span>Step 5: Interpret Results</span></a></li><li><a class="tocitem" href="#Complete-Example:-Email-Communication"><span>Complete Example: Email Communication</span></a></li><li><a class="tocitem" href="#Cumulative-Network-State"><span>Cumulative Network State</span></a></li><li><a class="tocitem" href="#Best-Practices"><span>Best Practices</span></a></li><li><a class="tocitem" href="#Next-Steps"><span>Next Steps</span></a></li></ul></li><li><span class="tocitem">User Guide</span><ul><li><a class="tocitem" href="../guide/history/">Interaction History</a></li><li><a class="tocitem" href="../guide/statistics/">Advanced Statistics</a></li><li><a class="tocitem" href="../guide/timing/">Timing Models</a></li></ul></li><li><span class="tocitem">API Reference</span><ul><li><a class="tocitem" href="../api/types/">Types</a></li><li><a class="tocitem" href="../api/statistics/">Statistics</a></li><li><a class="tocitem" href="../api/estimation/">Estimation</a></li></ul></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li class="is-active"><a href>Getting Started</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Getting Started</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/Statistical-network-analysis-with-Julia/Relevent.jl/blob/main/docs/src/getting_started.md#" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="Getting-Started"><a class="docs-heading-anchor" href="#Getting-Started">Getting Started</a><a id="Getting-Started-1"></a><a class="docs-heading-anchor-permalink" href="#Getting-Started" title="Permalink"></a></h1><p>This tutorial walks through common use cases for Relevent.jl, from tracking interaction histories to fitting ordinal and timing models.</p><h2 id="Installation"><a class="docs-heading-anchor" href="#Installation">Installation</a><a id="Installation-1"></a><a class="docs-heading-anchor-permalink" href="#Installation" title="Permalink"></a></h2><p>Install Relevent.jl from GitHub:</p><pre><code class="language-julia hljs">using Pkg
+Pkg.add(url=&quot;https://github.com/Statistical-network-analysis-with-Julia/Relevent.jl&quot;)</code></pre><h2 id="Basic-Workflow"><a class="docs-heading-anchor" href="#Basic-Workflow">Basic Workflow</a><a id="Basic-Workflow-1"></a><a class="docs-heading-anchor-permalink" href="#Basic-Workflow" title="Permalink"></a></h2><p>The typical Relevent.jl workflow consists of four steps:</p><ol><li><strong>Create events</strong> - Prepare your relational event data</li><li><strong>Track history</strong> - Build interaction history for advanced statistics</li><li><strong>Define statistics</strong> - Choose advanced statistics with decay parameters</li><li><strong>Fit models</strong> - Use ordinal BPM or timing models as appropriate</li></ol><h2 id="Step-1:-Create-Event-Data"><a class="docs-heading-anchor" href="#Step-1:-Create-Event-Data">Step 1: Create Event Data</a><a id="Step-1:-Create-Event-Data-1"></a><a class="docs-heading-anchor-permalink" href="#Step-1:-Create-Event-Data" title="Permalink"></a></h2><p>Relevent.jl works with the <code>Event</code> type from REM.jl:</p><pre><code class="language-julia hljs">using REM
+using Relevent
+
+# Create events: sender, receiver, time
+events = [
+    Event(1, 2, 1.0),   # Alice -&gt; Bob at t=1
+    Event(2, 1, 2.0),   # Bob -&gt; Alice at t=2
+    Event(1, 3, 3.0),   # Alice -&gt; Carol at t=3
+    Event(3, 2, 4.0),   # Carol -&gt; Bob at t=4
+    Event(2, 3, 5.0),   # Bob -&gt; Carol at t=5
+    Event(1, 2, 6.0),   # Alice -&gt; Bob at t=6 (repeat)
+    Event(3, 1, 7.0),   # Carol -&gt; Alice at t=7
+    Event(2, 1, 8.0),   # Bob -&gt; Alice at t=8
+]</code></pre><h2 id="Step-2:-Track-Interaction-History"><a class="docs-heading-anchor" href="#Step-2:-Track-Interaction-History">Step 2: Track Interaction History</a><a id="Step-2:-Track-Interaction-History-1"></a><a class="docs-heading-anchor-permalink" href="#Step-2:-Track-Interaction-History" title="Permalink"></a></h2><p>The <code>InteractionHistory</code> type provides detailed tracking of past interactions:</p><pre><code class="language-julia hljs"># Create a history tracker
+history = InteractionHistory{Float64}()
+
+# Process events
+for event in events
+    update_history!(history, event)
+end
+
+# Query the history
+println(&quot;1-&gt;2 count: &quot;, get_interaction_count(history, 1, 2))    # 2
+println(&quot;2-&gt;1 count: &quot;, get_interaction_count(history, 2, 1))    # 2
+println(&quot;1-&gt;3 count: &quot;, get_interaction_count(history, 1, 3))    # 1
+
+# Last interaction time
+println(&quot;Last 1-&gt;2: &quot;, get_last_interaction(history, 1, 2))      # 6.0
+println(&quot;Last 3-&gt;2: &quot;, get_last_interaction(history, 3, 2))      # 4.0
+println(&quot;Last 2-&gt;3: &quot;, get_last_interaction(history, 2, 3))      # 5.0</code></pre><h3 id="Accessing-Detailed-History"><a class="docs-heading-anchor" href="#Accessing-Detailed-History">Accessing Detailed History</a><a id="Accessing-Detailed-History-1"></a><a class="docs-heading-anchor-permalink" href="#Accessing-Detailed-History" title="Permalink"></a></h3><pre><code class="language-julia hljs"># All receivers of actor 1 (ordered by time)
+history.sender_history[1]    # [2, 3, 2]
+
+# All senders to actor 2 (ordered by time)
+history.receiver_history[2]  # [1, 3, 1]
+
+# Event times for specific dyad
+history.pair_history[(1, 2)]  # [1.0, 6.0]
+
+# Event counts per dyad
+history.event_counts[(1, 2)]  # 2</code></pre><h2 id="Step-3:-Define-Advanced-Statistics"><a class="docs-heading-anchor" href="#Step-3:-Define-Advanced-Statistics">Step 3: Define Advanced Statistics</a><a id="Step-3:-Define-Advanced-Statistics-1"></a><a class="docs-heading-anchor-permalink" href="#Step-3:-Define-Advanced-Statistics" title="Permalink"></a></h2><p>Relevent.jl provides statistics that use the full interaction history with half-life decay:</p><pre><code class="language-julia hljs"># Prior interaction with 10-unit halflife
+prior = PriorInteraction(10.0; direction=:both)
+
+# Local inertia: tendency for repeat interactions
+inertia = LocalInertia(10.0)
+
+# Sender activity momentum
+momentum = Momentum(10.0)
+
+# Sending and receiving capacity
+send_cap = SendingCapacity(10.0)
+recv_cap = ReceivingCapacity(10.0)</code></pre><h3 id="Exploring-Available-Statistics"><a class="docs-heading-anchor" href="#Exploring-Available-Statistics">Exploring Available Statistics</a><a id="Exploring-Available-Statistics-1"></a><a class="docs-heading-anchor-permalink" href="#Exploring-Available-Statistics" title="Permalink"></a></h3><table><tr><th style="text-align: right">Category</th><th style="text-align: right">Statistics</th><th style="text-align: right">Description</th></tr><tr><td style="text-align: right"><strong>Prior Contact</strong></td><td style="text-align: right"><code>PriorInteraction</code></td><td style="text-align: right">Decayed count of prior interactions</td></tr><tr><td style="text-align: right"><strong>Inertia</strong></td><td style="text-align: right"><code>LocalInertia</code></td><td style="text-align: right">Recency of last same-dyad interaction</td></tr><tr><td style="text-align: right"><strong>Capacity</strong></td><td style="text-align: right"><code>SendingCapacity</code>, <code>ReceivingCapacity</code></td><td style="text-align: right">Actor-level activity/popularity</td></tr><tr><td style="text-align: right"><strong>Momentum</strong></td><td style="text-align: right"><code>Momentum</code></td><td style="text-align: right">Overall sender activity momentum</td></tr></table><h3 id="Computing-Statistics-Manually"><a class="docs-heading-anchor" href="#Computing-Statistics-Manually">Computing Statistics Manually</a><a id="Computing-Statistics-Manually-1"></a><a class="docs-heading-anchor-permalink" href="#Computing-Statistics-Manually" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Compute a statistic for a potential event
+# PriorInteraction computes using the history
+value = compute(
+    PriorInteraction(10.0; direction=:outgoing),
+    history,
+    1,        # sender
+    2,        # receiver
+    9.0       # current time
+)
+println(&quot;Prior interaction value: &quot;, value)</code></pre><h3 id="Choosing-Halflife"><a class="docs-heading-anchor" href="#Choosing-Halflife">Choosing Halflife</a><a id="Choosing-Halflife-1"></a><a class="docs-heading-anchor-permalink" href="#Choosing-Halflife" title="Permalink"></a></h3><p>The halflife parameter controls how quickly past events lose influence:</p><table><tr><th style="text-align: right">Halflife</th><th style="text-align: right">Use Case</th></tr><tr><td style="text-align: right">1-5</td><td style="text-align: right">Very fast decay, only recent events matter</td></tr><tr><td style="text-align: right">10-50</td><td style="text-align: right">Moderate decay, reasonable for most applications</td></tr><tr><td style="text-align: right">100+</td><td style="text-align: right">Slow decay, long memory</td></tr><tr><td style="text-align: right">Inf</td><td style="text-align: right">No decay, all events equally weighted</td></tr></table><h2 id="Step-4a:-Fit-a-Standard-REM"><a class="docs-heading-anchor" href="#Step-4a:-Fit-a-Standard-REM">Step 4a: Fit a Standard REM</a><a id="Step-4a:-Fit-a-Standard-REM-1"></a><a class="docs-heading-anchor-permalink" href="#Step-4a:-Fit-a-Standard-REM" title="Permalink"></a></h2><p>Use Relevent.jl statistics with REM.jl&#39;s fitting framework:</p><pre><code class="language-julia hljs"># Create event sequence
+seq = EventSequence(events)
+
+# Define model with Relevent statistics
+stats = [
+    LocalInertia(10.0),
+    PriorInteraction(10.0; direction=:outgoing),
+    SendingCapacity(10.0),
+    ReceivingCapacity(10.0),
+]
+
+# Fit REM
+result = fit_rem(seq, stats; n_controls=50, seed=42)
+println(result)</code></pre><h2 id="Step-4b:-Fit-an-Ordinal-BPM"><a class="docs-heading-anchor" href="#Step-4b:-Fit-an-Ordinal-BPM">Step 4b: Fit an Ordinal BPM</a><a id="Step-4b:-Fit-an-Ordinal-BPM-1"></a><a class="docs-heading-anchor-permalink" href="#Step-4b:-Fit-an-Ordinal-BPM" title="Permalink"></a></h2><p>When only event ordering is known (not exact times):</p><pre><code class="language-julia hljs"># Define statistics
+stats = [
+    LocalInertia(10.0),
+    SendingCapacity(10.0),
+]
+
+n_actors = 3
+
+# Fit ordinal Butts-Park model
+result = fit_obpm(events, stats, n_actors)
+println(result)
+
+# Access results
+println(&quot;Coefficients: &quot;, result.coefficients)
+println(&quot;Log-likelihood: &quot;, result.loglik)
+println(&quot;Converged: &quot;, result.converged)</code></pre><h3 id="When-to-Use-Ordinal-vs.-Timed-Models"><a class="docs-heading-anchor" href="#When-to-Use-Ordinal-vs.-Timed-Models">When to Use Ordinal vs. Timed Models</a><a id="When-to-Use-Ordinal-vs.-Timed-Models-1"></a><a class="docs-heading-anchor-permalink" href="#When-to-Use-Ordinal-vs.-Timed-Models" title="Permalink"></a></h3><table><tr><th style="text-align: right">Data Type</th><th style="text-align: right">Model</th><th style="text-align: right">Use Case</th></tr><tr><td style="text-align: right">Exact timestamps</td><td style="text-align: right"><code>fit_rem</code></td><td style="text-align: right">Email logs, chat messages</td></tr><tr><td style="text-align: right">Only ordering known</td><td style="text-align: right"><code>fit_obpm</code></td><td style="text-align: right">Survey responses, narrative data</td></tr><tr><td style="text-align: right">Inter-event durations</td><td style="text-align: right"><code>fit_timing</code></td><td style="text-align: right">When timing itself is of interest</td></tr></table><h2 id="Step-4c:-Fit-a-Timing-Model"><a class="docs-heading-anchor" href="#Step-4c:-Fit-a-Timing-Model">Step 4c: Fit a Timing Model</a><a id="Step-4c:-Fit-a-Timing-Model-1"></a><a class="docs-heading-anchor-permalink" href="#Step-4c:-Fit-a-Timing-Model" title="Permalink"></a></h2><p>Model inter-event time distributions:</p><pre><code class="language-julia hljs"># Define statistics affecting the hazard rate
+stats = [
+    LocalInertia(10.0),
+    SendingCapacity(10.0),
+]
+
+# Fit with exponential baseline hazard
+result_exp = fit_timing(events, stats, n_actors; baseline=:exponential)
+println(result_exp)
+
+# Fit with Weibull baseline hazard
+result_weib = fit_timing(events, stats, n_actors; baseline=:weibull)
+println(result_weib)
+
+# Fit with Gompertz baseline hazard
+result_gomp = fit_timing(events, stats, n_actors; baseline=:gompertz)
+println(result_gomp)</code></pre><h3 id="Baseline-Hazard-Functions"><a class="docs-heading-anchor" href="#Baseline-Hazard-Functions">Baseline Hazard Functions</a><a id="Baseline-Hazard-Functions-1"></a><a class="docs-heading-anchor-permalink" href="#Baseline-Hazard-Functions" title="Permalink"></a></h3><table><tr><th style="text-align: right">Baseline</th><th style="text-align: right">Hazard Shape</th><th style="text-align: right">Parameters</th><th style="text-align: right">Best For</th></tr><tr><td style="text-align: right">Exponential</td><td style="text-align: right">Constant</td><td style="text-align: right">rate <span>$\lambda$</span></td><td style="text-align: right">Memoryless processes</td></tr><tr><td style="text-align: right">Weibull</td><td style="text-align: right">Monotone increasing/decreasing</td><td style="text-align: right">scale <span>$\lambda$</span>, shape <span>$k$</span></td><td style="text-align: right">Aging effects</td></tr><tr><td style="text-align: right">Gompertz</td><td style="text-align: right">Exponentially increasing</td><td style="text-align: right"><span>$a$</span>, <span>$b$</span></td><td style="text-align: right">Accelerating processes</td></tr></table><h2 id="Step-5:-Interpret-Results"><a class="docs-heading-anchor" href="#Step-5:-Interpret-Results">Step 5: Interpret Results</a><a id="Step-5:-Interpret-Results-1"></a><a class="docs-heading-anchor-permalink" href="#Step-5:-Interpret-Results" title="Permalink"></a></h2><h3 id="Ordinal-BPM-Results"><a class="docs-heading-anchor" href="#Ordinal-BPM-Results">Ordinal BPM Results</a><a id="Ordinal-BPM-Results-1"></a><a class="docs-heading-anchor-permalink" href="#Ordinal-BPM-Results" title="Permalink"></a></h3><pre><code class="language-julia hljs">println(result)
+
+# Ordinal Butts-Park Model Results
+# ================================
+# N actors: 3
+# N events: 8
+# Log-likelihood: -12.3456
+# Converged: true
+#
+# Coefficients:
+#   LocalInertia               0.4523 (SE: 0.1234)
+#   SendingCapacity             0.0987 (SE: 0.0567)</code></pre><h3 id="Timing-Model-Results"><a class="docs-heading-anchor" href="#Timing-Model-Results">Timing Model Results</a><a id="Timing-Model-Results-1"></a><a class="docs-heading-anchor-permalink" href="#Timing-Model-Results" title="Permalink"></a></h3><pre><code class="language-julia hljs">println(result_exp)
+
+# Timing Model Results
+# ====================
+# Baseline: exponential
+# Baseline params: [0.125]
+# Log-likelihood: -45.6789
+# Converged: true</code></pre><h3 id="Computing-Hazard-and-Survival"><a class="docs-heading-anchor" href="#Computing-Hazard-and-Survival">Computing Hazard and Survival</a><a id="Computing-Hazard-and-Survival-1"></a><a class="docs-heading-anchor-permalink" href="#Computing-Hazard-and-Survival" title="Permalink"></a></h3><pre><code class="language-julia hljs">model = TimingModel(stats; baseline=:weibull)
+coef = result_weib.coefficients
+baseline_params = result_weib.baseline_params
+x = [0.5, 0.3]  # Statistic values
+
+# Hazard rate at time t
+h = hazard_rate(model, coef, baseline_params, 5.0, x)
+
+# Survival probability at time t
+S = survival_function(model, coef, baseline_params, 5.0, x)</code></pre><h2 id="Complete-Example:-Email-Communication"><a class="docs-heading-anchor" href="#Complete-Example:-Email-Communication">Complete Example: Email Communication</a><a id="Complete-Example:-Email-Communication-1"></a><a class="docs-heading-anchor-permalink" href="#Complete-Example:-Email-Communication" title="Permalink"></a></h2><pre><code class="language-julia hljs">using REM
+using Relevent
+
+# Email events with timestamps (hours)
+events = [
+    Event(1, 2, 0.0),   Event(2, 1, 0.5),   Event(1, 3, 1.0),
+    Event(3, 2, 1.5),   Event(2, 3, 2.0),   Event(1, 2, 3.0),
+    Event(3, 1, 4.0),   Event(2, 1, 5.0),   Event(1, 3, 6.0),
+    Event(2, 3, 7.0),   Event(3, 2, 8.0),   Event(1, 2, 9.0),
+]
+
+# Track history
+history = InteractionHistory{Float64}()
+for e in events
+    update_history!(history, e)
+end
+
+# Statistics with 4-hour halflife
+stats = [
+    LocalInertia(4.0),
+    PriorInteraction(4.0; direction=:both),
+    SendingCapacity(4.0),
+    ReceivingCapacity(4.0),
+]
+
+# Standard REM
+seq = EventSequence(events)
+result = fit_rem(seq, stats; n_controls=20, seed=42)
+println(result)
+
+# Positive LocalInertia -&gt; tendency to reply to same person
+# Positive PriorInteraction -&gt; prior contact increases future contact</code></pre><h2 id="Cumulative-Network-State"><a class="docs-heading-anchor" href="#Cumulative-Network-State">Cumulative Network State</a><a id="Cumulative-Network-State-1"></a><a class="docs-heading-anchor-permalink" href="#Cumulative-Network-State" title="Permalink"></a></h2><p>For tracking decaying network state:</p><pre><code class="language-julia hljs"># Create state tracker with 10-unit halflife
+state = CumulativeState{Float64}(3; halflife=10.0)
+
+# Update with events
+for event in events
+    update_state!(state, event)
+end
+
+# Query state
+println(&quot;Actor 1 out-degree: &quot;, get_outdegree_history(state, 1))
+println(&quot;Actor 2 in-degree: &quot;, get_indegree_history(state, 2))
+
+# View decayed adjacency matrix
+println(&quot;Adjacency matrix:\n&quot;, state.adj_matrix)</code></pre><h2 id="Best-Practices"><a class="docs-heading-anchor" href="#Best-Practices">Best Practices</a><a id="Best-Practices-1"></a><a class="docs-heading-anchor-permalink" href="#Best-Practices" title="Permalink"></a></h2><ol><li><strong>Choose appropriate halflife</strong>: Match the temporal scale of your data</li><li><strong>Start with basic statistics</strong>: LocalInertia and PriorInteraction are usually informative</li><li><strong>Check for sufficient events</strong>: Need at least 10 events per parameter</li><li><strong>Verify convergence</strong>: Check <code>result.converged == true</code></li><li><strong>Compare models</strong>: Try different baseline hazards for timing models</li><li><strong>Use ordinal BPM when appropriate</strong>: When exact timing is unreliable</li></ol><h2 id="Next-Steps"><a class="docs-heading-anchor" href="#Next-Steps">Next Steps</a><a id="Next-Steps-1"></a><a class="docs-heading-anchor-permalink" href="#Next-Steps" title="Permalink"></a></h2><ul><li>Learn about <a href="../guide/history/">Interaction History</a> tracking in detail</li><li>Explore <a href="../guide/statistics/">Advanced Statistics</a> available</li><li>Understand <a href="../guide/timing/">Timing Models</a> for duration analysis</li></ul></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../">« Home</a><a class="docs-footer-nextpage" href="../guide/history/">Interaction History »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.1 on <span class="colophon-date" title="Monday 16 February 2026 18:14">Monday 16 February 2026</span>. Using Julia version 1.12.5.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
