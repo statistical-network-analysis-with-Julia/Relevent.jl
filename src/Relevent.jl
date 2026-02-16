@@ -26,14 +26,14 @@ export LocalInertia, Momentum
 
 # Ordinal models
 export OrdinalBPM, fit_obpm, OrdinalBPMResult
-export rank_events, ordinal_likelihood
+export rank_events
 
 # Timing models
 export TimingModel, fit_timing, TimingModelResult
 export hazard_rate, survival_function
 
 # History tracking
-export EventHistory, update_history!
+export update_history!
 export get_interaction_count, get_last_interaction
 
 # Network state
@@ -541,7 +541,18 @@ function update_state!(state::CumulativeState{T}, event::Event{T}) where T
     return state
 end
 
+"""
+    get_outdegree_history(state::CumulativeState, actor) -> Float64
+
+Get the (possibly decayed) out-degree of `actor` from the cumulative state.
+"""
 get_outdegree_history(state::CumulativeState, actor::Int) = state.outdegree[actor]
+
+"""
+    get_indegree_history(state::CumulativeState, actor) -> Float64
+
+Get the (possibly decayed) in-degree of `actor` from the cumulative state.
+"""
 get_indegree_history(state::CumulativeState, actor::Int) = state.indegree[actor]
 
 end # module

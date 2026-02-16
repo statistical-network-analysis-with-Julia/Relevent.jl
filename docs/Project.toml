@@ -1,0 +1,13 @@
+[deps]
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+Network = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+REM = "f8e5b5a0-7c3d-4b5a-9c5e-1a2b3c4d5e6f"
+Relevent = "f2345678-90ab-cdef-1234-567890123456"
+
+[sources]
+Relevent = {path = ".."}
+Network = {path = "../../Network"}
+REM = {path = "../../REM"}
+
+[compat]
+Documenter = "1"
