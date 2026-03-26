@@ -34,11 +34,7 @@ jobs:
         run: |
           julia --project=docs -e '
             using Pkg
-            Pkg.develop([
-              PackageSpec(url="https://github.com/Statistical-network-analysis-with-Julia/Network.jl"),
-              PackageSpec(url="https://github.com/Statistical-network-analysis-with-Julia/REM.jl"),
-              PackageSpec(path=pwd()),
-            ])
+            Pkg.develop(PackageSpec(path=pwd()))
             Pkg.instantiate()'
 
       - name: Build and deploy documentation

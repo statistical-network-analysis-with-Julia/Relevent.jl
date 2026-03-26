@@ -1,5 +1,17 @@
 # Relevent.jl
 
+
+[![Network Analysis](https://img.shields.io/badge/Network-Analysis-orange.svg)](https://github.com/statistical-network-analysis-with-Julia/Relevent.jl)
+[![Build Status](https://github.com/statistical-network-analysis-with-Julia/Relevent.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/statistical-network-analysis-with-Julia/Relevent.jl/actions/workflows/CI.yml?query=branch%3Amain)
+[![Documentation](https://img.shields.io/badge/docs-stable-blue.svg)](https://statistical-network-analysis-with-Julia.github.io/Relevent.jl/stable/)
+[![Documentation](https://img.shields.io/badge/docs-dev-blue.svg)](https://statistical-network-analysis-with-Julia.github.io/Relevent.jl/dev/)
+[![Julia](https://img.shields.io/badge/Julia-1.9+-purple.svg)](https://julialang.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+<p align="center">
+  <img src="docs/src/assets/logo.svg" alt="Relevent.jl icon" width="160">
+</p>
+
 Additional Relational Event Model Features for Julia.
 
 ## Overview
@@ -12,7 +24,7 @@ This package is a Julia port of the R `relevent` package from the StatNet collec
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/Statistical-network-analysis-with-Julia/Relevent.jl")
+Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/Relevent.jl")
 ```
 
 ## Features
@@ -201,6 +213,21 @@ events = [Event(1, 2, 1.0), Event(2, 3, 2.0), ...]  # Pseudo-times from order
 result = fit_obpm(events, stats, n_actors)
 ```
 
+## Documentation
+
+For more detailed documentation, see:
+
+- [Stable Documentation](https://statistical-network-analysis-with-Julia.github.io/Relevent.jl/stable/)
+- [Development Documentation](https://statistical-network-analysis-with-Julia.github.io/Relevent.jl/dev/)
+
+## References
+
+1. Butts, C.T. (2008). A relational event framework for social action. *Sociological Methodology*, 38(1), 155-200.
+
+2. Butts, C.T., Marcum, C.S. (2017). A relational event approach to modeling behavioral dynamics. In *Group Processes* (pp. 51-92). Springer.
+
+3. Perry, P.O., Wolfe, P.J. (2013). Point process modelling for directed interaction networks. *Journal of the Royal Statistical Society: Series B*, 75(5), 821-849.
+
 ## License
 
-MIT License
+MIT License - see [LICENSE](LICENSE) for details.

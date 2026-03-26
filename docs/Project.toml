@@ -6,8 +6,8 @@ Relevent = "f2345678-90ab-cdef-1234-567890123456"
 
 [sources]
 Relevent = {path = ".."}
-Network = {path = "../../Network"}
-REM = {path = "../../REM"}
+Network = {path = "../../Network.jl"}
+REM = {path = "../../REM.jl"}
 
 [compat]
 Documenter = "1"
