@@ -6,8 +6,8 @@ Relevent = "ff95e53f-ef79-4eb6-bb6b-7db73a0b5534"
 
 [sources]
 Relevent = {path = ".."}
-Network = {url = "https://github.com/statistical-network-analysis-with-Julia/Network.jl.git"}
-REM = {url = "https://github.com/statistical-network-analysis-with-Julia/REM.jl.git"}
+Network = {path = "../../Network.jl"}
+REM = {path = "../../REM.jl"}
 
 [compat]
 Documenter = "1"
