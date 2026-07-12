@@ -51,7 +51,10 @@ Where $h$ is the halflife and the sum is over all past events from sender $s$ to
 ```julia
 prior = PriorInteraction(10.0; direction=:outgoing)
 
-# After events: 1->2 at t=0, 1->2 at t=5
+history = InteractionHistory{Float64}()
+update_history!(history, Event(1, 2, 0.0))
+update_history!(history, Event(1, 2, 5.0))
+
 # At t=10:
 # Event at t=0: weight = exp(-log(2)/10 * 10) = 0.5
 # Event at t=5: weight = exp(-log(2)/10 * 5) = 0.707
@@ -236,6 +239,11 @@ stats = [
 Try multiple halflife values and compare:
 
 ```julia
+demo_events = [Event(1, 2, Float64(t)) for t in 1:10]
+append!(demo_events, [Event(2, 3, t + 0.5) for t in 1.0:10.0])
+sort!(demo_events; by=e -> e.time)
+seq = EventSequence(demo_events)
+
 for hl in [1.0, 5.0, 10.0, 50.0, 100.0]
     stats = [
         LocalInertia(hl),

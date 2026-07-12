@@ -17,9 +17,11 @@ REM = {path = "../REM.jl"}
 
 [compat]
 Distributions = "0.25"
+LinearAlgebra = "1.12.0"
 Network = "0.1"
 REM = "0.1"
-StatsAPI = "1"
+Statistics = "1.11.1"
+StatsAPI = "1.7"
 julia = "1.12"
 
 [extras]

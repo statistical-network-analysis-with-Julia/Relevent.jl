@@ -30,6 +30,9 @@ Constant hazard rate -- events occur at a fixed rate:
 $$h_0(t) = \lambda$$
 
 ```julia
+using REM, Relevent
+
+stats = [LocalInertia(10.0), SendingCapacity(10.0)]
 model = TimingModel(stats; baseline=:exponential)
 ```
 
@@ -144,6 +147,7 @@ println(result)
 
 The instantaneous event rate at time $t$:
 
+<!-- skip-check -->
 ```julia
 h = hazard_rate(model, coef, baseline_params, t, x)
 ```
@@ -154,6 +158,7 @@ Where `x` is a vector of statistic values for the potential event.
 
 The probability that no event occurs before time $t$:
 
+<!-- skip-check -->
 ```julia
 S = survival_function(model, coef, baseline_params, t, x)
 ```
@@ -220,20 +225,25 @@ println(result)
 # Log-likelihood: -12.3456
 # Converged: true
 #
-# Coefficients:
-#   LocalInertia               0.4523 (SE: 0.1234)
-#   SendingCapacity             0.0987 (SE: 0.0567)
+#                   Estimate  Std.Error  z value  Pr(>|z|)
+# local_inertia       0.4523     0.1234   3.6653    0.0002 ***
+# sending_capacity    0.0987     0.0567   1.7407    0.0817 .
+# ---
+# Signif. codes: 0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
 ```
 
 ## Comparing Models
 
 ### Different Baselines
 
+Only the exponential baseline is fittable; requesting `:weibull` or
+`:gompertz` from `fit_timing` raises an informative error (those baselines
+are available for `hazard_rate`/`survival_function` with user-supplied
+parameters):
+
 ```julia
-for baseline in [:exponential, :weibull, :gompertz]
-    result = fit_timing(events, stats, n_actors; baseline=baseline)
-    println("$baseline: LL=$(round(result.loglik, digits=2))")
-end
+result = fit_timing(events, stats, n_actors; baseline=:exponential)
+println("exponential: LL=$(round(result.loglik, digits=2))")
 ```
 
 ### Different Statistics

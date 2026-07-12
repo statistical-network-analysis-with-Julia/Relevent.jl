@@ -8,7 +8,10 @@ Install Relevent.jl from GitHub:
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/Statistical-network-analysis-with-Julia/Relevent.jl")
+Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/Network.jl")
+Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/NetworkDynamic.jl")
+Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/REM.jl")
+Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/Relevent.jl")
 ```
 
 ## Basic Workflow
@@ -198,17 +201,11 @@ stats = [
     SendingCapacity(10.0),
 ]
 
-# Fit with exponential baseline hazard
+# Fit with exponential baseline hazard (the only fittable baseline —
+# Weibull/Gompertz raise an informative error from fit_timing and are
+# available for hazard_rate/survival_function)
 result_exp = fit_timing(events, stats, n_actors; baseline=:exponential)
 println(result_exp)
-
-# Fit with Weibull baseline hazard
-result_weib = fit_timing(events, stats, n_actors; baseline=:weibull)
-println(result_weib)
-
-# Fit with Gompertz baseline hazard
-result_gomp = fit_timing(events, stats, n_actors; baseline=:gompertz)
-println(result_gomp)
 ```
 
 ### Baseline Hazard Functions
@@ -254,16 +251,18 @@ println(result_exp)
 ### Computing Hazard and Survival
 
 ```julia
-model = TimingModel(stats; baseline=:weibull)
-coef = result_weib.coefficients
-baseline_params = result_weib.baseline_params
+# Evaluate the fitted exponential model, or a Weibull/Gompertz baseline
+# with parameters of your choosing
+coefs = result_exp.coefficients
+baseline_params = result_exp.baseline_params
 x = [0.5, 0.3]  # Statistic values
 
 # Hazard rate at time t
-h = hazard_rate(model, coef, baseline_params, 5.0, x)
+h = hazard_rate(result_exp.model, coefs, baseline_params, 5.0, x)
 
-# Survival probability at time t
-S = survival_function(model, coef, baseline_params, 5.0, x)
+# Survival probability at time t under a Weibull baseline (scale 8, shape 1.5)
+model_w = TimingModel(stats; baseline=:weibull)
+S = survival_function(model_w, coefs, [8.0, 1.5], 5.0, x)
 ```
 
 ## Complete Example: Email Communication

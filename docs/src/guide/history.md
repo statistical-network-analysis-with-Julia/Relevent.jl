@@ -207,6 +207,7 @@ For statistics that need a decaying adjacency representation, use `CumulativeSta
 
 ```julia
 # Create with 10-unit halflife
+n_actors = 5
 state = CumulativeState{Float64}(n_actors; halflife=10.0)
 
 # Update with events
@@ -253,8 +254,8 @@ prior = PriorInteraction(10.0; direction=:outgoing)
 inertia = LocalInertia(10.0)
 momentum = Momentum(10.0)
 
-# Compute using history
-value = compute(prior, history, sender, receiver, current_time)
+# Compute using history (candidate event 1 -> 2, evaluated at t = 10)
+value = compute(prior, history, 1, 2, 10.0)
 ```
 
 See [Advanced Statistics](statistics.md) for details on each statistic.

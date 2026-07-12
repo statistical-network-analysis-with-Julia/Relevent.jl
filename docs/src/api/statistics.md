@@ -21,6 +21,26 @@ ReceivingCapacity
 Momentum
 ```
 
+## Participation Shifts
+
+The 13 Gibson (2003) participation-shift indicators, named as in R
+relevent (`PSAB-BA`, ...).
+
+```@docs
+PShift
+pshift_types
+```
+
+## Covariate Effects
+
+Actor-covariate effects as in R relevent.
+
+```@docs
+CovSnd
+CovRec
+CovInt
+```
+
 ## Utility Functions
 
 ```@docs

@@ -1,0 +1,18 @@
+[deps]
+BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+REM = "f78d20dc-c2b5-46e6-a2d4-577bd45c3c5a"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+Relevent = "ff95e53f-ef79-4eb6-bb6b-7db73a0b5534"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[sources]
+Network = {path = "../../Network.jl"}
+REM = {path = "../../REM.jl"}
+Relevent = {path = ".."}
+
+[extras]
+Network = "027a387e-e55f-4537-a155-5037e5a23bdb"
+
+[compat]
+BenchmarkTools = "1"
+julia = "1.12"

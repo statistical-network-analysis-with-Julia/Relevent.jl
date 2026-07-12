@@ -43,16 +43,22 @@ Relevent.jl is designed for:
 
 - **Interaction history**: Track complete interaction history with per-dyad detail
 - **Advanced statistics**: Prior interaction, sending/receiving capacity, momentum, local inertia
-- **Half-life decay**: All statistics support configurable exponential decay
+- **Participation shifts**: The 13 Gibson (2003) `PSAB-BA`-family indicators ([`PShift`](@ref))
+- **Covariate effects**: [`CovSnd`](@ref), [`CovRec`](@ref), [`CovInt`](@ref) as in R relevent
+- **Half-life decay**: All statistics support configurable exponential decay, maintained by streaming accumulators that decay lazily on read (no per-evaluation history rescans)
 - **Ordinal BPM**: Butts-Park Model for ordinal (rank-order) event data
-- **Timing models**: Exponential, Weibull, and Gompertz baseline hazards
+- **Timing models**: Exponential, Weibull, and Gompertz baseline hazards, with a `t0` observation-onset keyword for left-truncated windows
+- **Standardized entry point**: [`fit_relevent`](@ref) (alias [`rem_dyad`](@ref)) dispatching between the ordinal and interval likelihoods like `relevent::rem.dyad`
 - **Cumulative state**: Decaying network state for efficient computation
 
 ## Installation
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/Statistical-network-analysis-with-Julia/Relevent.jl")
+Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/Network.jl")
+Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/NetworkDynamic.jl")
+Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/REM.jl")
+Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/Relevent.jl")
 ```
 
 Or for development:

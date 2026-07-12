@@ -410,6 +410,50 @@ end
                                               t0=shifted[1].time + 1.0)
     end
 
+    @testset "fit_relevent / rem_dyad standardized entry point" begin
+        rng = Random.Xoshiro(13)
+        n = 5
+        events = Event{Float64}[]
+        t = 0.0
+        for m in 1:60
+            t += rand(rng)
+            s = rand(rng, 1:n)
+            r = rand(rng, setdiff(1:n, s))
+            push!(events, Event(s, r, t))
+        end
+        stats = [PShift(:AB_BA), LocalInertia(5.0)]
+
+        # ordinal=true (the default, as in relevent::rem.dyad) -> fit_obpm
+        r_ord = fit_relevent(events, stats, n)
+        @test r_ord isa OrdinalBPMResult
+        ref_ord = fit_obpm(events, stats, n)
+        @test r_ord.coefficients == ref_ord.coefficients
+        @test r_ord.loglik == ref_ord.loglik
+
+        # ordinal=false -> the interval (timing) likelihood, kwargs forwarded
+        r_tim = fit_relevent(events, stats, n; ordinal=false, t0=0.0)
+        @test r_tim isa TimingModelResult
+        ref_tim = fit_timing(events, stats, n; t0=0.0)
+        @test r_tim.coefficients == ref_tim.coefficients
+        @test r_tim.baseline_params == ref_tim.baseline_params
+
+        # rem_dyad is the R-faithful alias
+        r_alias = rem_dyad(events, stats, n)
+        @test r_alias isa OrdinalBPMResult
+        @test r_alias.coefficients == r_ord.coefficients
+
+        # show() renders the shared ecosystem coefficient table
+        # (Network.jl print_coeftable: z / Pr(>|z|) columns + signif codes)
+        for (res, heading) in ((r_ord, "Ordinal Butts-Park Model Results"),
+                               (r_tim, "Timing Model Results"))
+            out = sprint(show, res)
+            @test occursin(heading, out)
+            @test occursin("PSAB-BA", out)
+            @test occursin("Pr(>|z|)", out)
+            @test occursin("Signif. codes", out)
+        end
+    end
+
     @testset "Hazard/survival consistency" begin
         stat = LocalInertia(5.0)
         x = [0.7]

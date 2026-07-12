@@ -2,6 +2,17 @@
 
 This page documents the model fitting functions in Relevent.jl.
 
+## Standardized Entry Point
+
+`fit_relevent` dispatches between the ordinal and interval-timing
+likelihoods, exactly like `relevent::rem.dyad`; `rem_dyad` is the
+R-faithful alias.
+
+```@docs
+fit_relevent
+rem_dyad
+```
+
 ## Ordinal Models
 
 ### fit_obpm

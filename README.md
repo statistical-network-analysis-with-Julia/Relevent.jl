@@ -22,17 +22,31 @@ This package is a Julia port of the R `relevent` package from the StatNet collec
 
 ## Installation
 
+Requires Julia 1.12+. Relevent.jl depends on the unregistered
+[Network.jl](https://github.com/statistical-network-analysis-with-Julia/Network.jl), [NetworkDynamic.jl](https://github.com/statistical-network-analysis-with-Julia/NetworkDynamic.jl), and [REM.jl](https://github.com/statistical-network-analysis-with-Julia/REM.jl) packages, which must be added first (in this order):
+
 ```julia
 using Pkg
+Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/Network.jl")
+Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/NetworkDynamic.jl")
+Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/REM.jl")
 Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/Relevent.jl")
 ```
+
+For development, you can instead clone all ecosystem repositories side by
+side (the monorepo layout) and start Julia with the root workspace project
+(`julia --project=.` in the clone root): the `[sources]` path dependencies
+then wire the packages together with no ordered installs needed.
 
 ## Features
 
 - **Interaction history**: Detailed tracking of event sequences
-- **Advanced statistics**: Prior interaction, sending/receiving capacity, momentum
-- **Ordinal BPM**: Model event ordering without exact timing
-- **Timing models**: Parametric models for inter-event times
+- **Advanced statistics**: Prior interaction, sending/receiving capacity, momentum — computed via streaming accumulators (each event is absorbed once; no per-evaluation rescans of the event history)
+- **Participation shifts**: The 13 Gibson (2003) `PSAB-BA`-family effects (`PShift`)
+- **Covariate effects**: `CovSnd`, `CovRec`, `CovInt` as in R relevent
+- **Ordinal BPM**: Model event ordering without exact timing (`fit_obpm`)
+- **Timing models**: Parametric models for inter-event times (`fit_timing`, with a `t0` observation-onset keyword for left-truncated windows)
+- **Standardized entry point**: `fit_relevent` (alias `rem_dyad`), dispatching between the ordinal and interval likelihoods via `ordinal=true/false` exactly like `relevent::rem.dyad`
 
 ## Quick Start
 
@@ -81,30 +95,93 @@ history.event_counts[(i,j)]  # Count for dyad
 
 ## Advanced Statistics
 
+The examples below share a small simulated event stream:
+
+```julia
+using REM, Relevent, Random
+
+rng = Xoshiro(1)
+events = [Event(rand(rng, 1:6), rand(rng, 1:6), Float64(t)) for t in 1:80]
+events = filter(e -> e.sender != e.receiver, events)
+n_actors = 6
+```
+
 ### Prior Interaction
 ```julia
-# Decayed count of prior interactions
-PriorInteraction(halflife; direction=:outgoing)
-PriorInteraction(halflife; direction=:incoming)
-PriorInteraction(halflife; direction=:both)
+# Decayed count of prior interactions (halflife = 10 time units)
+PriorInteraction(10.0; direction=:outgoing)
+PriorInteraction(10.0; direction=:incoming)
+PriorInteraction(10.0; direction=:both)
 ```
 
 ### Capacity Statistics
 ```julia
 # Sender's activity level
-SendingCapacity(halflife)
+SendingCapacity(10.0)
 
 # Receiver's popularity
-ReceivingCapacity(halflife)
+ReceivingCapacity(10.0)
 ```
 
 ### Inertia and Momentum
 ```julia
 # Tendency for repeat interactions (same dyad)
-LocalInertia(halflife)
+LocalInertia(10.0)
 
 # Overall sender activity momentum
-Momentum(halflife; normalize=false)
+Momentum(10.0; normalize=false)
+```
+
+All history statistics decay with a half-life parameterization
+(`decay = log(2)/halflife`) and are maintained by streaming accumulators:
+each event is absorbed into the state once, and decayed values are
+computed lazily on read, so evaluation cost does not grow with the length
+of the event history.
+
+### Participation Shifts
+
+The 13 Gibson (2003) participation-shift indicators, named as in R
+relevent (`PSAB-BA`, `PSAB-BY`, ...):
+
+```julia
+using Relevent
+
+PShift(:AB_BA)      # turn receiving: B answers A
+PShift("PSAB-XY")   # turn usurping: an outsider addresses another outsider
+pshift_types()      # all 13 shift symbols
+```
+
+In shift names, `A`/`B` are the previous event's sender/receiver, `X`/`Y`
+are any other actors, and `0` is the null actor (group-directed events are
+encoded with `receiver == 0`).
+
+### Covariate Effects
+
+Actor-covariate effects as in R relevent, indexed by actor ID:
+
+```julia
+z = randn(10)     # one value per actor
+
+CovSnd(z)         # sender covariate: statistic for i→j is z[i]
+CovRec(z)         # receiver covariate: z[j]
+CovInt(z)         # interaction covariate: z[i] + z[j]
+```
+
+## Standardized Entry Point
+
+`fit_relevent` is the package's `fit_<model>` entry point (the ecosystem
+convention alongside `REM.fit_rem`, `ERGM.fit_ergm`, `Siena.fit_siena`,
+...); `rem_dyad` is the R-faithful alias:
+
+<!-- skip-check -->
+```julia
+# Ordinal likelihood (default, as in relevent::rem.dyad)
+result = fit_relevent(events, [PShift(:AB_BA), CovSnd(z)], n_actors)
+
+# Interval-timing likelihood using the observed waiting times
+result = fit_relevent(events, stats, n_actors; ordinal=false, t0=0.0)
+
+rem_dyad(events, stats, n_actors)   # identical to fit_relevent
 ```
 
 ## Ordinal Butts-Park Model
@@ -139,16 +216,24 @@ Model inter-event times with parametric hazard functions:
 
 ```julia
 # Create timing model
-model = TimingModel(statistics; baseline=:exponential)
-model = TimingModel(statistics; baseline=:weibull)
-model = TimingModel(statistics; baseline=:gompertz)
+model = TimingModel(stats; baseline=:exponential)
+model_w = TimingModel(stats; baseline=:weibull)
+model_g = TimingModel(stats; baseline=:gompertz)
 
-# Fit model
-result = fit_timing(events, statistics, n_actors)
+# Fit model (exponential baseline; Weibull/Gompertz raise an informative
+# error from fit_timing but work with hazard_rate/survival_function)
+timing = fit_timing(events, stats, n_actors)
 
-# Hazard and survival
-h = hazard_rate(model, coef, baseline_params, t, x)
-S = survival_function(model, coef, baseline_params, t, x)
+# Observation onset: for a left-truncated window (the process was already
+# running when recording started), pass the window start as t0 so the
+# first waiting time Δt₁ = t₁ − t0 is not overstated. Default t0 = 0,
+# matching R relevent's "event times relative to onset of observation".
+timing = fit_timing(events, stats, n_actors; t0=0.5)
+
+# Hazard and survival for a dyad with statistic vector x at time t
+x = zeros(length(stats))
+h = hazard_rate(model, timing.coefficients, timing.baseline_params, 1.0, x)
+S = survival_function(model, timing.coefficients, timing.baseline_params, 1.0, x)
 ```
 
 ### Baseline Hazards
@@ -171,15 +256,16 @@ for event in events
 end
 
 # Query state
-get_outdegree_history(state, actor)
-get_indegree_history(state, actor)
+get_outdegree_history(state, 1)   # decayed out-degree of actor 1
+get_indegree_history(state, 1)    # decayed in-degree of actor 1
 state.adj_matrix  # Decayed adjacency
 ```
 
 ## Example: Email Communication
 
+<!-- skip-check -->
 ```julia
-# Load email events
+# Load email events (your own loader; REM.load_events reads DataFrames/CSV)
 events = load_email_events()
 n_actors = 100
 
@@ -206,6 +292,7 @@ result = fit_rem(EventSequence(events, n_actors), stats)
 
 ## Example: Ordinal Data
 
+<!-- skip-check -->
 ```julia
 # Survey data: "Who did you interact with today?"
 # Order known, but not exact times
