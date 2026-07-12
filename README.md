@@ -5,7 +5,7 @@
 [![Build Status](https://github.com/statistical-network-analysis-with-Julia/Relevent.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/statistical-network-analysis-with-Julia/Relevent.jl/actions/workflows/CI.yml?query=branch%3Amain)
 [![Documentation](https://img.shields.io/badge/docs-stable-blue.svg)](https://statistical-network-analysis-with-Julia.github.io/Relevent.jl/stable/)
 [![Documentation](https://img.shields.io/badge/docs-dev-blue.svg)](https://statistical-network-analysis-with-Julia.github.io/Relevent.jl/dev/)
-[![Julia](https://img.shields.io/badge/Julia-1.9+-purple.svg)](https://julialang.org/)
+[![Julia](https://img.shields.io/badge/Julia-1.12+-purple.svg)](https://julialang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 <p align="center">
@@ -36,6 +36,7 @@ Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/Relevent
 
 ## Quick Start
 
+<!-- skip-check -->
 ```julia
 using REM
 using Relevent
@@ -57,6 +58,7 @@ stat = PriorInteraction(halflife=10.0; direction=:both)
 
 ## Interaction History
 
+<!-- skip-check -->
 ```julia
 # Create history tracker
 history = InteractionHistory{Float64}()

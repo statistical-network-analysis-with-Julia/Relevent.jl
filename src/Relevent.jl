@@ -5,11 +5,19 @@ Extends REM.jl with features from R `relevent`'s `rem.dyad`:
 
 - decay-weighted interaction-history statistics that plug directly into
   `REM.fit_rem` (they implement REM's 4-argument `compute` interface) and
-  into this package's own full-risk-set estimators;
+  into this package's own full-risk-set estimators — computed via
+  streaming accumulators (each event is absorbed once), not by rescanning
+  the event history per evaluation;
+- the 13 Gibson (2003) participation-shift effects (`PShift`, named as in
+  relevent: `PSAB-BA`, `PSAB-BY`, ...) and the `CovSnd`/`CovRec`/`CovInt`
+  covariate effects;
 - **ordinal** estimation (`fit_obpm`): the exact multinomial partial
   likelihood over the full risk set (no case-control sampling);
 - **interval-timing** estimation (`fit_timing`): the exponential-baseline
   proportional-hazards likelihood using the observed waiting times;
+- the standardized entry point `fit_relevent` (with the R-faithful alias
+  `rem_dyad`), dispatching between the two likelihoods via `ordinal=true/false`
+  exactly like `relevent::rem.dyad`;
 - baseline hazard/survival functions (exponential, Weibull, Gompertz) and
   cumulative decayed network state.
 
@@ -20,13 +28,34 @@ module Relevent
 using LinearAlgebra
 using REM
 using Statistics
+using StatsAPI
+
+# ccdf keeps precision in the tail of the Wald p-values: 2*(1 - cdf(...))
+# underflows to exactly 0 for |z| ≳ 8
+using Distributions: Normal, ccdf
+# Shared result-presentation infrastructure (Network.jl): the R-style
+# coefficient table used by every model package in the ecosystem
+using Network: print_coeftable
 
 import REM: compute, name
+# StatsAPI generics extended for this package's result types (shared with
+# REM, StatsBase, GLM, ...)
+import StatsAPI: coef, stderror
+
+# StatsAPI accessors (methods for OrdinalBPMResult and TimingModelResult)
+export coef, stderror
 
 # Additional REM statistics
 export InteractionHistory, PriorInteraction
 export SendingCapacity, ReceivingCapacity
 export LocalInertia, Momentum
+
+# Participation shifts (Gibson 2003) and covariate effects, as in R relevent
+export PShift, pshift_types
+export CovSnd, CovRec, CovInt
+
+# Standardized entry point (fit_relevent) and its R-faithful alias (rem.dyad)
+export fit_relevent, rem_dyad
 
 # Ordinal models
 export OrdinalBPM, fit_obpm, OrdinalBPMResult
@@ -122,6 +151,121 @@ function get_last_interaction(history::InteractionHistory{T}, sender::Int, recei
 end
 
 # =============================================================================
+# Streaming decayed accumulators
+# =============================================================================
+#
+# The decay-weighted statistics below used to rescan their full event
+# history on every evaluation, which makes full-risk-set estimation
+# O(E² · dyads). Instead we maintain, per (event vector, decay rate),
+# lazily decayed accumulators: each entry stores (value, last event time)
+# and is decayed on read, and every event is absorbed exactly once via a
+# cursor. The values equal the direct sums Σₖ exp(-decay · (t_now - tₖ))
+# up to floating-point rounding — the decay factors telescope exactly.
+
+mutable struct _DecayAccum
+    cursor::Int                                        # events absorbed so far
+    last_event::Tuple{Int,Int,Float64}                 # last absorbed (s, r, t)
+    dyad::Dict{Tuple{Int,Int}, Tuple{Float64,Float64}} # (value, last time) per dyad
+    out_val::Dict{Int, Tuple{Float64,Float64}}         # per sender
+    in_val::Dict{Int, Tuple{Float64,Float64}}          # per receiver
+    out_n::Dict{Int, Int}                              # undecayed sender event counts
+
+    _DecayAccum() = new(0, (0, 0, 0.0),
+                        Dict{Tuple{Int,Int}, Tuple{Float64,Float64}}(),
+                        Dict{Int, Tuple{Float64,Float64}}(),
+                        Dict{Int, Tuple{Float64,Float64}}(),
+                        Dict{Int, Int}())
+end
+
+function _reset!(acc::_DecayAccum)
+    acc.cursor = 0
+    acc.last_event = (0, 0, 0.0)
+    empty!(acc.dyad)
+    empty!(acc.out_val)
+    empty!(acc.in_val)
+    empty!(acc.out_n)
+    return acc
+end
+
+# Each decay-weighted statistic owns an _AccumCache: one accumulator per
+# event vector it has been evaluated against (identified by `===`, held
+# through a WeakRef so a statistic does not keep dead states alive). The
+# list is typically length 1, so lookup is a couple of pointer compares —
+# this sits on the innermost estimation loop.
+mutable struct _AccumCache
+    entries::Vector{Tuple{WeakRef, _DecayAccum}}
+
+    _AccumCache() = new(Tuple{WeakRef, _DecayAccum}[])
+end
+
+_event_srt(e::Event) = (e.sender, e.receiver, float(e.time))
+_event_srt(e::Tuple) = (e[1], e[2], float(e[3]))
+
+function _bump!(d::Dict{K, Tuple{Float64,Float64}}, k::K, t::Float64,
+                decay::Float64) where K
+    entry = get(d, k, nothing)
+    if entry === nothing
+        d[k] = (1.0, t)
+    else
+        v, t0 = entry
+        d[k] = (v * exp(-decay * (t - t0)) + 1.0, t)
+    end
+    return nothing
+end
+
+function _read(d::Dict{K, Tuple{Float64,Float64}}, k::K, t_now::Float64,
+               decay::Float64) where K
+    entry = get(d, k, nothing)
+    entry === nothing && return 0.0
+    v, t0 = entry
+    return v * exp(-decay * (t_now - t0))
+end
+
+# The synced accumulator for `events` at rate `decay`: absorb any events
+# appended since the last call (rebuilding from scratch if the vector was
+# reset or rewritten in place).
+function _accum(cache::_AccumCache, events::AbstractVector, decay::Float64)
+    entries = cache.entries
+    acc = nothing
+    i = 1
+    while i <= length(entries)
+        source = entries[i][1].value
+        if source === nothing
+            deleteat!(entries, i)          # its state was garbage-collected
+        elseif source === events
+            acc = entries[i][2]
+            break
+        else
+            i += 1
+        end
+    end
+    if acc === nothing
+        acc = _DecayAccum()
+        push!(entries, (WeakRef(events), acc))
+    end
+
+    n = length(events)
+    if acc.cursor > n ||
+       (acc.cursor > 0 && _event_srt(events[acc.cursor]) != acc.last_event)
+        _reset!(acc)
+    end
+
+    for i in (acc.cursor + 1):n
+        s, r, t = _event_srt(events[i])
+        _bump!(acc.dyad, (s, r), t, decay)
+        _bump!(acc.out_val, s, t, decay)
+        _bump!(acc.in_val, r, t, decay)
+        acc.out_n[s] = get(acc.out_n, s, 0) + 1
+    end
+    if n > 0
+        acc.cursor = n
+        acc.last_event = _event_srt(events[n])
+    end
+
+    return acc
+end
+
+# =============================================================================
 # Advanced REM Statistics
 # =============================================================================
 #
@@ -129,14 +273,11 @@ end
 #
 #   compute(stat, history::InteractionHistory, sender, receiver, current_time)
 #       — used by this package's full-risk-set estimators;
-#   compute(stat, state::REM.NetworkState, sender, receiver)
+#   compute(stat, state::REM.EventNetworkState, sender, receiver)
 #       — REM.jl's interface, so these statistics work inside REM.fit_rem
 #         and generate_observations.
 #
 # Decay is half-life parameterized: decay = log(2)/halflife.
-
-_decay_sum(times, current_time, decay) =
-    sum(exp(-decay * float(current_time - t)) for t in times; init=0.0)
 
 """
     PriorInteraction(halflife; direction=:outgoing) <: AbstractStatistic
@@ -147,49 +288,40 @@ receiver events, `:incoming` = receiver→sender, `:both` = their sum).
 struct PriorInteraction <: AbstractStatistic
     halflife::Float64
     direction::Symbol
+    cache::_AccumCache
 
     function PriorInteraction(halflife::Float64; direction::Symbol=:outgoing)
         direction in (:outgoing, :incoming, :both) ||
             throw(ArgumentError("direction must be :outgoing, :incoming, or :both"))
         halflife > 0 || throw(ArgumentError("halflife must be positive"))
-        new(halflife, direction)
+        new(halflife, direction, _AccumCache())
     end
 end
 
 name(stat::PriorInteraction) = "prior_interaction_$(stat.direction)"
 
-function compute(stat::PriorInteraction, history::InteractionHistory{T},
-                 sender::Int, receiver::Int, current_time::T) where T
+function _prior_interaction(stat::PriorInteraction, events::AbstractVector,
+                            sender::Int, receiver::Int, t_now::Float64)
     decay = log(2) / stat.halflife
+    acc = _accum(stat.cache, events, decay)
     value = 0.0
-
     if stat.direction in (:outgoing, :both)
-        value += _decay_sum(get(history.pair_history, (sender, receiver), T[]),
-                            current_time, decay)
+        value += _read(acc.dyad, (sender, receiver), t_now, decay)
     end
     if stat.direction in (:incoming, :both)
-        value += _decay_sum(get(history.pair_history, (receiver, sender), T[]),
-                            current_time, decay)
-    end
-
-    return value
-end
-
-function compute(stat::PriorInteraction, state::REM.NetworkState,
-                 sender::Int, receiver::Int)
-    decay = log(2) / stat.halflife
-    t_now = state.current_time
-    value = 0.0
-    for (s, r, t, _) in state.event_history
-        if stat.direction in (:outgoing, :both) && s == sender && r == receiver
-            value += exp(-decay * float(t_now - t))
-        end
-        if stat.direction in (:incoming, :both) && s == receiver && r == sender
-            value += exp(-decay * float(t_now - t))
-        end
+        value += _read(acc.dyad, (receiver, sender), t_now, decay)
     end
     return value
 end
+
+compute(stat::PriorInteraction, history::InteractionHistory{T},
+        sender::Int, receiver::Int, current_time::T) where T =
+    _prior_interaction(stat, history.events, sender, receiver, float(current_time))
+
+compute(stat::PriorInteraction, state::REM.EventNetworkState,
+        sender::Int, receiver::Int) =
+    _prior_interaction(stat, state.event_history, sender, receiver,
+                       float(state.current_time))
 
 """
     SendingCapacity(halflife) <: AbstractStatistic
@@ -199,6 +331,9 @@ activity), regardless of receiver.
 """
 struct SendingCapacity <: AbstractStatistic
     halflife::Float64
+    cache::_AccumCache
+
+    SendingCapacity(halflife::Float64) = new(halflife, _AccumCache())
 end
 
 name(::SendingCapacity) = "sending_capacity"
@@ -206,24 +341,15 @@ name(::SendingCapacity) = "sending_capacity"
 function compute(stat::SendingCapacity, history::InteractionHistory{T},
                  sender::Int, receiver::Int, current_time::T) where T
     decay = log(2) / stat.halflife
-    value = 0.0
-    # Sum over every dyad the sender has used, over every event time
-    for r in unique(get(history.sender_history, sender, Int[]))
-        value += _decay_sum(get(history.pair_history, (sender, r), T[]),
-                            current_time, decay)
-    end
-    return value
+    return _read(_accum(stat.cache, history.events, decay).out_val, sender,
+                 float(current_time), decay)
 end
 
-function compute(stat::SendingCapacity, state::REM.NetworkState,
+function compute(stat::SendingCapacity, state::REM.EventNetworkState,
                  sender::Int, receiver::Int)
     decay = log(2) / stat.halflife
-    t_now = state.current_time
-    value = 0.0
-    for (s, _, t, _) in state.event_history
-        s == sender && (value += exp(-decay * float(t_now - t)))
-    end
-    return value
+    return _read(_accum(stat.cache, state.event_history, decay).out_val, sender,
+                 float(state.current_time), decay)
 end
 
 """
@@ -234,6 +360,9 @@ popularity).
 """
 struct ReceivingCapacity <: AbstractStatistic
     halflife::Float64
+    cache::_AccumCache
+
+    ReceivingCapacity(halflife::Float64) = new(halflife, _AccumCache())
 end
 
 name(::ReceivingCapacity) = "receiving_capacity"
@@ -241,23 +370,15 @@ name(::ReceivingCapacity) = "receiving_capacity"
 function compute(stat::ReceivingCapacity, history::InteractionHistory{T},
                  sender::Int, receiver::Int, current_time::T) where T
     decay = log(2) / stat.halflife
-    value = 0.0
-    for s in unique(get(history.receiver_history, receiver, Int[]))
-        value += _decay_sum(get(history.pair_history, (s, receiver), T[]),
-                            current_time, decay)
-    end
-    return value
+    return _read(_accum(stat.cache, history.events, decay).in_val, receiver,
+                 float(current_time), decay)
 end
 
-function compute(stat::ReceivingCapacity, state::REM.NetworkState,
+function compute(stat::ReceivingCapacity, state::REM.EventNetworkState,
                  sender::Int, receiver::Int)
     decay = log(2) / stat.halflife
-    t_now = state.current_time
-    value = 0.0
-    for (_, r, t, _) in state.event_history
-        r == receiver && (value += exp(-decay * float(t_now - t)))
-    end
-    return value
+    return _read(_accum(stat.cache, state.event_history, decay).in_val, receiver,
+                 float(state.current_time), decay)
 end
 
 """
@@ -280,7 +401,7 @@ function compute(stat::LocalInertia, history::InteractionHistory{T},
     return exp(-decay * float(current_time - times[end]))
 end
 
-function compute(stat::LocalInertia, state::REM.NetworkState,
+function compute(stat::LocalInertia, state::REM.EventNetworkState,
                  sender::Int, receiver::Int)
     decay = log(2) / stat.halflife
     t_last = get(state.last_event_time, (sender, receiver), nothing)
@@ -298,40 +419,216 @@ weight of the sender's past events.
 struct Momentum <: AbstractStatistic
     halflife::Float64
     normalize::Bool
+    cache::_AccumCache
 
-    Momentum(halflife::Float64; normalize::Bool=false) = new(halflife, normalize)
+    Momentum(halflife::Float64; normalize::Bool=false) =
+        new(halflife, normalize, _AccumCache())
 end
 
 name(::Momentum) = "momentum"
 
-function compute(stat::Momentum, history::InteractionHistory{T},
-                 sender::Int, receiver::Int, current_time::T) where T
+function _momentum(stat::Momentum, events::AbstractVector, sender::Int,
+                   t_now::Float64)
     decay = log(2) / stat.halflife
-    value = 0.0
-    n_sender = 0
-    for r in unique(get(history.sender_history, sender, Int[]))
-        times = get(history.pair_history, (sender, r), T[])
-        n_sender += length(times)
-        value += _decay_sum(times, current_time, decay)
+    acc = _accum(stat.cache, events, decay)
+    value = _read(acc.out_val, sender, t_now, decay)
+    if stat.normalize
+        n_sender = get(acc.out_n, sender, 0)
+        n_sender > 0 && (value /= n_sender)
     end
-    (stat.normalize && n_sender > 0) && (value /= n_sender)
     return value
 end
 
-function compute(stat::Momentum, state::REM.NetworkState,
-                 sender::Int, receiver::Int)
-    decay = log(2) / stat.halflife
-    t_now = state.current_time
-    value = 0.0
-    n_sender = 0
-    for (s, _, t, _) in state.event_history
-        s == sender || continue
-        n_sender += 1
-        value += exp(-decay * float(t_now - t))
+compute(stat::Momentum, history::InteractionHistory{T},
+        sender::Int, receiver::Int, current_time::T) where T =
+    _momentum(stat, history.events, sender, float(current_time))
+
+compute(stat::Momentum, state::REM.EventNetworkState,
+        sender::Int, receiver::Int) =
+    _momentum(stat, state.event_history, sender, float(state.current_time))
+
+# =============================================================================
+# Participation shifts (Gibson 2003; Butts 2008)
+# =============================================================================
+
+# The 13 participation shifts, named as in R relevent's rem.dyad
+# ("PSAB-BA" ↦ :AB_BA). Grouped as in Gibson (2003):
+#   turn receiving:  AB-BA, AB-B0, AB-BY
+#   turn claiming:   A0-X0, A0-XA, A0-XY
+#   turn usurping:   AB-X0, AB-XA, AB-XB, AB-XY
+#   turn continuing: A0-AY, AB-A0, AB-AY
+const _PSHIFT_TYPES = (:AB_BA, :AB_B0, :AB_BY,
+                       :A0_X0, :A0_XA, :A0_XY,
+                       :AB_X0, :AB_XA, :AB_XB, :AB_XY,
+                       :A0_AY, :AB_A0, :AB_AY)
+
+"""
+    pshift_types() -> NTuple{13, Symbol}
+
+The 13 Gibson (2003) participation-shift types accepted by [`PShift`](@ref),
+in relevent's grouping (turn receiving, claiming, usurping, continuing).
+"""
+pshift_types() = _PSHIFT_TYPES
+
+"""
+    PShift(shift::Symbol) <: AbstractStatistic
+    PShift(shift::AbstractString) <: AbstractStatistic
+
+Participation-shift indicator (Gibson 2003), matching R relevent's
+`PSAB-BA`-family effects: with previous event A→B, the statistic is 1 for
+a candidate event that realizes the shift, 0 otherwise (and 0 for the
+first event, which has no previous event).
+
+`shift` is one of [`pshift_types`](@ref) (e.g. `:AB_BA`) or the R name
+(e.g. `"PSAB-BA"`). In shift names, `A`/`B` are the previous event's
+sender/receiver, `X`/`Y` are any *other* actors, and `0` is the null
+actor: an event "to the group" is encoded with `receiver == 0`, so shifts
+involving `0` (e.g. `:AB_B0`, `:A0_X0`) can only be nonzero when such
+group-directed events occur in the data — with strictly dyadic events
+they are structurally zero, exactly as in `relevent::rem.dyad`.
+
+# Examples
+```julia
+PShift(:AB_BA)      # turn receiving: B answers A
+PShift("PSAB-XY")   # turn usurping: an outsider addresses another outsider
+```
+"""
+struct PShift <: AbstractStatistic
+    shift::Symbol
+    stat_name::String
+
+    function PShift(shift::Symbol; name::String="")
+        shift in _PSHIFT_TYPES ||
+            throw(ArgumentError("unknown participation shift :$shift; " *
+                                "valid shifts: $(join(_PSHIFT_TYPES, ", "))"))
+        new(shift, isempty(name) ? "PS" * replace(String(shift), "_" => "-") : name)
     end
-    (stat.normalize && n_sender > 0) && (value /= n_sender)
-    return value
 end
+
+PShift(shift::AbstractString; kwargs...) =
+    PShift(Symbol(replace(replace(String(shift), r"^PS" => ""), "-" => "_")); kwargs...)
+
+name(stat::PShift) = stat.stat_name
+
+# Indicator that the candidate event i→j realizes `shift` after the
+# previous event a→b (b == 0 means the previous event was group-directed).
+function _pshift_value(shift::Symbol, a::Int, b::Int, i::Int, j::Int)
+    i == j && return 0.0
+    if b == 0
+        # Previous event was A→0 (to the group)
+        shift === :A0_X0 && return (i != a && j == 0) ? 1.0 : 0.0
+        shift === :A0_XA && return (i != a && j == a) ? 1.0 : 0.0
+        shift === :A0_XY && return (i != a && j != a && j != 0) ? 1.0 : 0.0
+        shift === :A0_AY && return (i == a && j != a && j != 0) ? 1.0 : 0.0
+        return 0.0
+    else
+        # Previous event was dyadic A→B
+        new_i = i != a && i != b
+        new_j = j != a && j != b && j != 0
+        shift === :AB_BA && return (i == b && j == a) ? 1.0 : 0.0
+        shift === :AB_B0 && return (i == b && j == 0) ? 1.0 : 0.0
+        shift === :AB_BY && return (i == b && new_j) ? 1.0 : 0.0
+        shift === :AB_A0 && return (i == a && j == 0) ? 1.0 : 0.0
+        shift === :AB_AY && return (i == a && new_j) ? 1.0 : 0.0
+        shift === :AB_X0 && return (new_i && j == 0) ? 1.0 : 0.0
+        shift === :AB_XA && return (new_i && j == a) ? 1.0 : 0.0
+        shift === :AB_XB && return (new_i && j == b) ? 1.0 : 0.0
+        shift === :AB_XY && return (new_i && new_j) ? 1.0 : 0.0
+        return 0.0
+    end
+end
+
+function compute(stat::PShift, history::InteractionHistory{T},
+                 sender::Int, receiver::Int, current_time::T) where T
+    isempty(history.events) && return 0.0
+    prev = history.events[end]
+    return _pshift_value(stat.shift, prev.sender, prev.receiver, sender, receiver)
+end
+
+function compute(stat::PShift, state::REM.EventNetworkState,
+                 sender::Int, receiver::Int)
+    isempty(state.event_history) && return 0.0
+    a, b, _, _ = state.event_history[end]
+    return _pshift_value(stat.shift, a, b, sender, receiver)
+end
+
+# =============================================================================
+# Covariate effects (CovSnd / CovRec / CovInt, as in R relevent)
+# =============================================================================
+
+"""
+    CovSnd(values::AbstractVector{<:Real}; name="CovSnd") <: AbstractStatistic
+
+Covariate effect for outgoing actions, as in R relevent: the statistic
+for a candidate event i→j is `values[i]` (the sender's covariate value).
+`values` is indexed by actor ID.
+"""
+struct CovSnd <: AbstractStatistic
+    values::Vector{Float64}
+    stat_name::String
+
+    CovSnd(values::AbstractVector{<:Real}; name::String="CovSnd") =
+        new(collect(Float64, values), name)
+end
+
+name(stat::CovSnd) = stat.stat_name
+
+"""
+    CovRec(values::AbstractVector{<:Real}; name="CovRec") <: AbstractStatistic
+
+Covariate effect for incoming actions, as in R relevent: the statistic
+for a candidate event i→j is `values[j]` (the receiver's covariate
+value). `values` is indexed by actor ID.
+"""
+struct CovRec <: AbstractStatistic
+    values::Vector{Float64}
+    stat_name::String
+
+    CovRec(values::AbstractVector{<:Real}; name::String="CovRec") =
+        new(collect(Float64, values), name)
+end
+
+name(stat::CovRec) = stat.stat_name
+
+"""
+    CovInt(values::AbstractVector{<:Real}; name="CovInt") <: AbstractStatistic
+
+Covariate effect for both outgoing and incoming actions, as in R
+relevent: the statistic for a candidate event i→j is
+`values[i] + values[j]`. `values` is indexed by actor ID.
+"""
+struct CovInt <: AbstractStatistic
+    values::Vector{Float64}
+    stat_name::String
+
+    CovInt(values::AbstractVector{<:Real}; name::String="CovInt") =
+        new(collect(Float64, values), name)
+end
+
+name(stat::CovInt) = stat.stat_name
+
+function _cov_value(values::Vector{Float64}, actor::Int)
+    1 <= actor <= length(values) ||
+        throw(ArgumentError("actor $actor has no covariate value " *
+                            "(covariate has length $(length(values)))"))
+    return values[actor]
+end
+
+compute(stat::CovSnd, ::InteractionHistory{T}, sender::Int, receiver::Int,
+        ::T) where T = _cov_value(stat.values, sender)
+compute(stat::CovSnd, ::REM.EventNetworkState, sender::Int, receiver::Int) =
+    _cov_value(stat.values, sender)
+
+compute(stat::CovRec, ::InteractionHistory{T}, sender::Int, receiver::Int,
+        ::T) where T = _cov_value(stat.values, receiver)
+compute(stat::CovRec, ::REM.EventNetworkState, sender::Int, receiver::Int) =
+    _cov_value(stat.values, receiver)
+
+compute(stat::CovInt, ::InteractionHistory{T}, sender::Int, receiver::Int,
+        ::T) where T =
+    _cov_value(stat.values, sender) + _cov_value(stat.values, receiver)
+compute(stat::CovInt, ::REM.EventNetworkState, sender::Int, receiver::Int) =
+    _cov_value(stat.values, sender) + _cov_value(stat.values, receiver)
 
 # =============================================================================
 # Full-risk-set machinery shared by the estimators
@@ -339,8 +636,19 @@ end
 
 # For each event (in time order): the case's statistic vector and the
 # matrix of statistics for every dyad in the full risk set. History is
-# strictly pre-event (no look-ahead).
-function _risk_set_stats(events::Vector{Event{T}}, statistics, n_actors::Int) where T
+# strictly pre-event (no look-ahead). `t0` is the observation onset: the
+# first event's waiting time is measured from it.
+#
+# Statistics are converted to a tuple (mirroring REM's tuple-backed
+# StatisticSet) so the inner loop over dyads compiles to statically
+# dispatched compute calls instead of dynamic dispatch through an
+# abstractly-typed vector.
+_risk_set_stats(events::Vector{Event{T}}, statistics::AbstractVector, n_actors::Int;
+                kwargs...) where T =
+    _risk_set_stats(events, Tuple(statistics), n_actors; kwargs...)
+
+function _risk_set_stats(events::Vector{Event{T}}, statistics::Tuple, n_actors::Int;
+                         t0::T=zero(T)) where T
     sorted = sort(events, by=e -> e.time)
     if length(sorted) > 1 && !allunique(e.time for e in sorted)
         @warn "Event sequence contains tied timestamps; ties are ordered " *
@@ -351,17 +659,24 @@ function _risk_set_stats(events::Vector{Event{T}}, statistics, n_actors::Int) wh
     dyads = [(s, r) for s in 1:n_actors for r in 1:n_actors if s != r]
     history = InteractionHistory{T}()
 
+    if !isempty(sorted) && t0 > sorted[1].time
+        throw(ArgumentError("t0 = $t0 is after the first event time " *
+                            "$(sorted[1].time); the observation onset must " *
+                            "precede all events"))
+    end
+
     case_idx = Vector{Int}(undef, length(sorted))
     X = Vector{Matrix{Float64}}(undef, length(sorted))
     waiting = Vector{Float64}(undef, length(sorted))
-    t_prev = length(sorted) > 0 ? zero(sorted[1].time) : zero(T)
+    t_prev = t0
 
     for (m, ev) in enumerate(sorted)
         Xm = Matrix{Float64}(undef, length(dyads), p)
         ci = 0
         for (d, (s, r)) in enumerate(dyads)
-            for (k, stat) in enumerate(statistics)
-                Xm[d, k] = compute(stat, history, s, r, ev.time)
+            vals = map(stat -> compute(stat, history, s, r, ev.time), statistics)
+            for k in 1:p
+                Xm[d, k] = vals[k]
             end
             (s == ev.sender && r == ev.receiver) && (ci = d)
         end
@@ -460,6 +775,14 @@ struct OrdinalBPMResult
     n_events::Int
 end
 
+# z statistics and two-sided normal (Wald) p-values for a coefficient table;
+# NaN where the standard error is unavailable.
+function _wald_zp(coefs::Vector{Float64}, ses::Vector{Float64})
+    z = [se > 0 ? c / se : NaN for (c, se) in zip(coefs, ses)]
+    p = [isnan(zk) ? NaN : 2 * ccdf(Normal(), abs(zk)) for zk in z]
+    return z, p
+end
+
 function Base.show(io::IO, result::OrdinalBPMResult)
     println(io, "Ordinal Butts-Park Model Results")
     println(io, "================================")
@@ -468,12 +791,24 @@ function Base.show(io::IO, result::OrdinalBPMResult)
     println(io, "Log-likelihood: $(round(result.loglik, digits=4))")
     println(io, "Converged: $(result.converged)")
     println(io)
-    println(io, "Coefficients:")
-    for (i, stat) in enumerate(result.model.statistics)
-        println(io, "  $(rpad(name(stat), 28)) $(lpad(round(result.coefficients[i], digits=4), 10)) " *
-                    "(SE: $(round(result.std_errors[i], digits=4)))")
-    end
+    z, p = _wald_zp(result.coefficients, result.std_errors)
+    print_coeftable(io, [name(stat) for stat in result.model.statistics],
+                    result.coefficients, result.std_errors, p; z_values=z)
 end
+
+"""
+    coef(result::OrdinalBPMResult) -> Vector{Float64}
+
+Extract coefficients from a fitted ordinal BPM (StatsAPI method).
+"""
+coef(result::OrdinalBPMResult) = result.coefficients
+
+"""
+    stderror(result::OrdinalBPMResult) -> Vector{Float64}
+
+Extract standard errors from a fitted ordinal BPM (StatsAPI method).
+"""
+stderror(result::OrdinalBPMResult) = result.std_errors
 
 """
     rank_events(events::Vector{Event}) -> Vector{Int}
@@ -510,23 +845,40 @@ function fit_obpm(events::Vector{Event{T}}, statistics::Vector{<:AbstractStatist
     _, case_idx, X, _ = _risk_set_stats(events, model.statistics, n_actors)
     M = length(X)
 
+    # Preallocated buffers shared by every derivative evaluation (all risk
+    # sets have the same size); the Hessian is accumulated in place via
+    # BLAS (gemm on sqrt(prob)-weighted rows for -E[XX'], ger! for the
+    # +E[X]E[X]' rank-1 update) instead of allocating per-event matrices.
+    D = size(X[1], 1)
+    η = Vector{Float64}(undef, D)
+    probs = Vector{Float64}(undef, D)
+    W = Matrix{Float64}(undef, D, p)
+    x_exp = Vector{Float64}(undef, p)
+
     function derivatives(θ)
         ll = 0.0
         grad = zeros(p)
         hess = zeros(p, p)
         for m in 1:M
             Xm = X[m]
-            η = Xm * θ
+            mul!(η, Xm, θ)
             ηmax = maximum(η)
-            w = exp.(η .- ηmax)
-            Z = sum(w)
-            probs = w ./ Z
+            Z = 0.0
+            @inbounds for d in 1:D
+                probs[d] = exp(η[d] - ηmax)
+                Z += probs[d]
+            end
+            probs ./= Z
 
             ll += η[case_idx[m]] - ηmax - log(Z)
 
-            x_exp = Xm' * probs
-            grad .+= Xm[case_idx[m], :] .- x_exp
-            hess .-= Xm' * (probs .* Xm) .- x_exp * x_exp'
+            mul!(x_exp, transpose(Xm), probs)
+            @inbounds for k in 1:p
+                grad[k] += Xm[case_idx[m], k] - x_exp[k]
+            end
+            W .= sqrt.(probs) .* Xm
+            mul!(hess, transpose(W), W, -1.0, 1.0)
+            BLAS.ger!(1.0, x_exp, x_exp, hess)
         end
         return ll, grad, hess
     end
@@ -583,12 +935,25 @@ function Base.show(io::IO, result::TimingModelResult)
     println(io, "Log-likelihood: $(round(result.loglik, digits=4))")
     println(io, "Converged: $(result.converged)")
     println(io)
-    println(io, "Coefficients:")
-    for (i, stat) in enumerate(result.model.statistics)
-        println(io, "  $(rpad(name(stat), 28)) $(lpad(round(result.coefficients[i], digits=4), 10)) " *
-                    "(SE: $(round(result.std_errors[i], digits=4)))")
-    end
+    z, p = _wald_zp(result.coefficients, result.std_errors)
+    print_coeftable(io, [name(stat) for stat in result.model.statistics],
+                    result.coefficients, result.std_errors, p; z_values=z)
 end
+
+"""
+    coef(result::TimingModelResult) -> Vector{Float64}
+
+Extract coefficients from a fitted timing model (StatsAPI method; the
+baseline rate is in `result.baseline_params`).
+"""
+coef(result::TimingModelResult) = result.coefficients
+
+"""
+    stderror(result::TimingModelResult) -> Vector{Float64}
+
+Extract standard errors from a fitted timing model (StatsAPI method).
+"""
+stderror(result::TimingModelResult) = result.std_errors
 
 """
     hazard_rate(model::TimingModel, coef, baseline_params, t, x) -> Float64
@@ -637,7 +1002,7 @@ end
 
 """
     fit_timing(events, statistics, n_actors; baseline=:exponential,
-               maxiter=100, tol=1e-8) -> TimingModelResult
+               t0=zero(T), maxiter=100, tol=1e-8) -> TimingModelResult
 
 Fit the interval-timing relational event model with an exponential
 baseline by exact maximum likelihood: with waiting time `Δt_m` before
@@ -650,9 +1015,18 @@ events),
 come from the observed information. Weibull/Gompertz baselines are not
 fitted (an informative error is raised); use them with
 [`hazard_rate`](@ref)/[`survival_function`](@ref).
+
+`t0` is the observation onset: the first event's waiting time is
+`Δt_1 = t_1 − t0`. The default `t0 = zero(T)` reproduces the previous
+behavior and matches R relevent, where "event times should be relative
+to onset of observation" (i.e. the clock starts at 0). For a
+left-truncated observation window — a process already running when
+recording started — pass the window start as `t0` so the first interval
+is not overstated; `t0` must not exceed the first event time.
 """
 function fit_timing(events::Vector{Event{T}}, statistics::Vector{<:AbstractStatistic},
                     n_actors::Int; baseline::Symbol=:exponential,
+                    t0::T=zero(T),
                     maxiter::Int=100, tol::Float64=1e-8) where T
     model = TimingModel(collect(AbstractStatistic, statistics); baseline=baseline)
     baseline == :exponential ||
@@ -661,7 +1035,7 @@ function fit_timing(events::Vector{Event{T}}, statistics::Vector{<:AbstractStati
     isempty(events) && throw(ArgumentError("no events to fit"))
 
     p = length(statistics)
-    _, case_idx, X, waiting = _risk_set_stats(events, model.statistics, n_actors)
+    _, case_idx, X, waiting = _risk_set_stats(events, model.statistics, n_actors; t0=t0)
     M = length(X)
 
     # Parameters: β = (log λ₀, θ)
@@ -702,6 +1076,47 @@ function fit_timing(events::Vector{Event{T}}, statistics::Vector{<:AbstractStati
     λ0 = exp(β[1])
     return TimingModelResult(model, β[2:end], [λ0], se[2:end], ll, converged)
 end
+
+# =============================================================================
+# Standardized entry point
+# =============================================================================
+
+"""
+    fit_relevent(events, statistics, n_actors; ordinal=true, kwargs...)
+
+Fit a dyadic relational event model over the full risk set — the standardized
+entry point of this package (`fit_<model>` naming, alongside `REM.fit_rem`,
+`ERGM.fit_ergm`, `Siena.fit_siena`, ...). [`rem_dyad`](@ref) is the R-faithful
+alias, mirroring `relevent::rem.dyad`.
+
+With `ordinal=true` (the default, as in `rem.dyad`) only the order of events is
+used and the model is fitted by [`fit_obpm`](@ref), returning an
+[`OrdinalBPMResult`](@ref). With `ordinal=false` the observed waiting times
+enter the exponential-baseline interval likelihood of [`fit_timing`](@ref),
+returning a [`TimingModelResult`](@ref). Keyword arguments (`maxiter`, `tol`,
+and for the interval likelihood `t0`) are forwarded to the underlying fitter.
+
+# Example
+```julia
+fit_relevent(events, [PShift(:AB_BA), CovSnd(z)], n_actors)                # ordinal
+fit_relevent(events, [PShift(:AB_BA)], n_actors; ordinal=false, t0=0.0)   # timing
+```
+"""
+function fit_relevent(events::Vector{Event{T}},
+                      statistics::Vector{<:AbstractStatistic}, n_actors::Int;
+                      ordinal::Bool=true, kwargs...) where T
+    return ordinal ? fit_obpm(events, statistics, n_actors; kwargs...) :
+                     fit_timing(events, statistics, n_actors; kwargs...)
+end
+
+"""
+    rem_dyad(events, statistics, n_actors; ordinal=true, kwargs...)
+
+Alias for [`fit_relevent`](@ref), keeping the R `relevent::rem.dyad` name.
+"""
+rem_dyad(events::Vector{Event{T}}, statistics::Vector{<:AbstractStatistic},
+         n_actors::Int; kwargs...) where T =
+    fit_relevent(events, statistics, n_actors; kwargs...)
 
 # =============================================================================
 # Cumulative Network State

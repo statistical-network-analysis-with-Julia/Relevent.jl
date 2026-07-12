@@ -6,6 +6,7 @@ Relevent.jl provides advanced statistics for relational event models that comple
 
 All Relevent.jl statistics implement:
 
+<!-- skip-check -->
 ```julia
 compute(stat, history, sender, receiver, current_time) -> Float64
 ```
@@ -17,6 +18,10 @@ The `history` is an `InteractionHistory` and `current_time` is the time at which
 Decayed count of prior interactions between two actors. This is the most general interaction history statistic.
 
 ```julia
+using REM, Relevent
+
+halflife = 10.0   # decay half-life used by the examples below
+
 # Count prior outgoing events from sender to receiver
 PriorInteraction(halflife; direction=:outgoing)
 

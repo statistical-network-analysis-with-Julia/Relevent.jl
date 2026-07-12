@@ -17,6 +17,7 @@ The interaction history maintains:
 ```julia
 using REM
 using Relevent
+using Dates: DateTime
 
 # Create an empty history tracker
 history = InteractionHistory{Float64}()
