@@ -6,12 +6,12 @@ Relevent = "ff95e53f-ef79-4eb6-bb6b-7db73a0b5534"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [sources]
-Network = {path = "../../Network.jl"}
+Networks = {path = "../Networks.jl"}
 REM = {path = "../../REM.jl"}
 Relevent = {path = ".."}
 
 [extras]
-Network = "027a387e-e55f-4537-a155-5037e5a23bdb"
+Networks = "027a387e-e55f-4537-a155-5037e5a23bdb"
 
 [compat]
 BenchmarkTools = "1"

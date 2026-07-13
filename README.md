@@ -23,11 +23,11 @@ This package is a Julia port of the R `relevent` package from the StatNet collec
 ## Installation
 
 Requires Julia 1.12+. Relevent.jl depends on the unregistered
-[Network.jl](https://github.com/statistical-network-analysis-with-Julia/Network.jl), [NetworkDynamic.jl](https://github.com/statistical-network-analysis-with-Julia/NetworkDynamic.jl), and [REM.jl](https://github.com/statistical-network-analysis-with-Julia/REM.jl) packages, which must be added first (in this order):
+[Networks.jl](https://github.com/statistical-network-analysis-with-Julia/Networks.jl), [NetworkDynamic.jl](https://github.com/statistical-network-analysis-with-Julia/NetworkDynamic.jl), and [REM.jl](https://github.com/statistical-network-analysis-with-Julia/REM.jl) packages, which must be added first (in this order):
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/Network.jl")
+Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/Networks.jl")
 Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/NetworkDynamic.jl")
 Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/REM.jl")
 Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/Relevent.jl")

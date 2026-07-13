@@ -83,6 +83,26 @@ let g = addgroup!(SUITE, "estimation")
     g["fit_obpm_$(N_EVENTS)ev"] =
         @benchmarkable fit_obpm($EVENTS, stats, $N_ACTORS) setup =
             (stats = make_stats())
+
+    # The risk-set cache policies (issue Relevent#2). `:all` materializes an
+    # n(n−1) × p design matrix per event — O(E · n² · p), 906 MB at
+    # (n, E, p) = (100, 2000, 6) — while `:chunked`/`:none` recompute them into a
+    # bounded cache on each pass. The fits are bit-identical; only cost moves.
+    #
+    # READ THE `memory` COLUMN WITH CARE. BenchmarkTools reports TOTAL bytes
+    # allocated, not the peak LIVE footprint — and the trade here runs the other
+    # way on that measure: the streamed policies allocate MORE in total (they
+    # replay the interaction history on every pass, and that garbage is counted)
+    # while holding far less live. The quantity the issue is about is the live
+    # one, and it is not in this table: it is `k * Relevent._design_bytes(plan)`
+    # for the `(mode, k)` that `Relevent._resolve_cache` returns — exact, and
+    # computable without allocating any of it. What this table measures honestly
+    # is the TIME each policy costs.
+    for cache in (:all, :chunked, :none)
+        g["fit_obpm_$(N_EVENTS)ev_cache_$(cache)"] =
+            @benchmarkable fit_obpm($EVENTS, stats, $N_ACTORS; cache=$cache,
+                                    chunk=32) setup = (stats = make_stats())
+    end
 end
 
 # ---------------------------------------------------------------------------

@@ -1,12 +1,12 @@
 [deps]
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
-Network = "027a387e-e55f-4537-a155-5037e5a23bdb"
+Networks = "027a387e-e55f-4537-a155-5037e5a23bdb"
 REM = "f78d20dc-c2b5-46e6-a2d4-577bd45c3c5a"
 Relevent = "ff95e53f-ef79-4eb6-bb6b-7db73a0b5534"
 
 [sources]
 Relevent = {path = ".."}
-Network = {path = "../../Network.jl"}
+Networks = {path = "../../Networks.jl"}
 REM = {path = "../../REM.jl"}
 
 [compat]

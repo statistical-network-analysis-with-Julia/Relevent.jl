@@ -40,3 +40,15 @@ hazard_rate
 ```@docs
 survival_function
 ```
+
+## Result Accessors
+
+Relevent.jl extends the StatsAPI generics for both result types, so a fitted
+model behaves like any other Julia statistical model.
+
+```@docs
+coef(::OrdinalBPMResult)
+coef(::TimingModelResult)
+stderror(::OrdinalBPMResult)
+stderror(::TimingModelResult)
+```

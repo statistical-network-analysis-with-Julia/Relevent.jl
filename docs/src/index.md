@@ -55,7 +55,7 @@ Relevent.jl is designed for:
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/Network.jl")
+Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/Networks.jl")
 Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/NetworkDynamic.jl")
 Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/REM.jl")
 Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/Relevent.jl")
@@ -157,3 +157,9 @@ Timing models extend REMs by explicitly modeling inter-event durations using par
 3. Lerner, J., Lomi, A. (2020). Reliability of relational event model estimates under sampling. *Network Science*, 8(1), 97-135.
 
 4. Stadtfeld, C., Block, P. (2017). Interactions, actors, and time: Dynamic network actor models for relational events. *Sociological Science*, 4, 318-352.
+
+## Module
+
+```@docs
+Relevent
+```

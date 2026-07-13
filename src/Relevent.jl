@@ -33,9 +33,23 @@ using StatsAPI
 # ccdf keeps precision in the tail of the Wald p-values: 2*(1 - cdf(...))
 # underflows to exactly 0 for |z| ≳ 8
 using Distributions: Normal, ccdf
-# Shared result-presentation infrastructure (Network.jl): the R-style
+# Shared result-presentation infrastructure (Networks.jl): the R-style
 # coefficient table used by every model package in the ecosystem
-using Network: print_coeftable
+using Networks: print_coeftable
+
+# The shared result-metadata protocol (Networks.jl `src/results.jl`): the seven
+# generic accessors that say what a fit actually did. Imported by name because
+# Relevent adds methods for `OrdinalBPMResult` and `TimingModelResult`;
+# `Networks.fit_metadata(fit)` collects them.
+import Networks: estimand, objective, is_exact, se_method, missing_method,
+                 tie_method, approximations
+
+# The shared TIED-EVENT vocabulary (Networks.jl `src/results.jl`): one `ties=`
+# keyword and one meaning per symbol across REM.jl and Relevent.jl.
+# `check_tie_policy` refuses a policy a model cannot honour — `:batch` for the
+# ordinal likelihood, `:breslow`/`:efron` for the exact-time one — instead of
+# letting it silently no-op.
+using Networks: TIE_POLICIES, check_tie_policy
 
 import REM: compute, name
 # StatsAPI generics extended for this package's result types (shared with
@@ -634,30 +648,189 @@ compute(stat::CovInt, ::REM.EventNetworkState, sender::Int, receiver::Int) =
 # Full-risk-set machinery shared by the estimators
 # =============================================================================
 
-# For each event (in time order): the case's statistic vector and the
-# matrix of statistics for every dyad in the full risk set. History is
-# strictly pre-event (no look-ahead). `t0` is the observation onset: the
-# first event's waiting time is measured from it.
+# =============================================================================
+# Tied event times (issue Relevent#1, review finding 12)
+# =============================================================================
+#
+# Both estimators here claim more than an event list gives them when two events
+# share a timestamp, and they claim DIFFERENT things, so they take different
+# subsets of the shared `Networks.TIE_POLICIES` vocabulary:
+#
+#   fit_obpm  — a likelihood over the ORDER of events. A tie means the order is
+#               genuinely unknown; sorting it invents information (and, because
+#               the statistics are read off the pre-event history, lets the event
+#               placed first enter the statistics of the one placed second). The
+#               likelihood is a multinomial partial likelihood, so the classical
+#               Cox tie corrections apply verbatim:
+#                 :error (default) | :ordered | :breslow | :efron
+#               `:batch` is refused — with the history frozen across the tied
+#               events, a "simultaneous batch" IS the Breslow correction.
+#
+#   fit_timing — an exact-time (exponential) likelihood. Under a continuous-time
+#               model P(tie) = 0: a tie is not a broken ordering but a violated
+#               assumption — a coarsened clock, or a genuinely simultaneous
+#               batch. There is no partial likelihood here to correct, so
+#               :breslow and :efron are refused (they are not "a bit wrong"
+#               here; they are undefined):
+#                 :error (default) | :ordered | :batch
+#               `:batch` reads the tie as one simultaneous batch: the events
+#               cannot have influenced one another (history frozen across the
+#               block) and the block consumes ONE exposure interval. `:ordered`
+#               instead lets each tied event after the first enter with a
+#               ZERO-LENGTH waiting interval — exposure the model then never
+#               sees — while still updating the history, i.e. it claims that one
+#               event caused the next in no time at all.
+
+const _OBPM_TIES_SUPPORTED = (:error, :ordered, :breslow, :efron)
+const _OBPM_TIES_MODEL = "`fit_obpm` (ordinal BPM: a likelihood over the ORDER of events)"
+const _OBPM_TIES_REASONS = Dict(
+    :batch => "an ordinal likelihood has no exposure interval for a batch to " *
+              "consume; holding the risk set fixed across the tied events and " *
+              "giving each its own multinomial term IS the Breslow correction, " *
+              "so pass `ties=:breslow` (or `:efron`) instead")
+
+const _TIMING_TIES_SUPPORTED = (:error, :ordered, :batch)
+const _TIMING_TIES_MODEL =
+    "`fit_timing` (exponential-baseline interval likelihood: an EXACT-TIME model)"
+const _TIMING_TIES_REASONS = Dict(
+    :breslow => "Breslow and Efron are corrections to a PARTIAL likelihood, in " *
+                "which the baseline hazard is profiled out and only the order of " *
+                "events is used. `fit_timing` maximizes the exact exponential " *
+                "likelihood of the waiting TIMES; there is no partial-likelihood " *
+                "denominator here for them to re-weight. Ties under a " *
+                "continuous-time model are a violated assumption, not a broken " *
+                "ordering: read them as a coarsened, simultaneous batch " *
+                "(`ties=:batch`), or fit the ordinal model with `fit_obpm(...; " *
+                "ties=:breslow)` if the order is what you care about",
+    :efron   => "Breslow and Efron are corrections to a PARTIAL likelihood, in " *
+                "which the baseline hazard is profiled out and only the order of " *
+                "events is used. `fit_timing` maximizes the exact exponential " *
+                "likelihood of the waiting TIMES; there is no partial-likelihood " *
+                "denominator here for them to re-weight. Ties under a " *
+                "continuous-time model are a violated assumption, not a broken " *
+                "ordering: read them as a coarsened, simultaneous batch " *
+                "(`ties=:batch`), or fit the ordinal model with `fit_obpm(...; " *
+                "ties=:efron)` if the order is what you care about")
+
+# Maximal runs of equal event time in a time-sorted vector: a tie is a run of
+# length > 1.
+function _tie_blocks(sorted::Vector{Event{T}}) where T
+    blocks = UnitRange{Int}[]
+    i = 1
+    n = length(sorted)
+    while i <= n
+        j = i
+        while j < n && sorted[j + 1].time == sorted[i].time
+            j += 1
+        end
+        push!(blocks, i:j)
+        i = j + 1
+    end
+    return blocks
+end
+
+# `ties=:error`: name the tie, do not fit. `claim` says what the model is
+# claiming that the tied data cannot support.
+function _reject_ties(sorted::Vector{Event{T}}, blocks::Vector{UnitRange{Int}},
+                      claim::AbstractString, advice::AbstractString) where T
+    tied = filter(b -> length(b) > 1, blocks)
+    isempty(tied) && return nothing
+    b = first(tied)
+    n_tied_events = sum(length, tied)
+    throw(ArgumentError(
+        "Event sequence contains tied timestamps: events $(first(b))–$(last(b)) " *
+        "($(length(b)) of them, in time order) all occur at t = " *
+        "$(sorted[first(b)].time)" *
+        (length(tied) > 1 ?
+         "; $(length(tied)) timestamps carry ties in all ($n_tied_events events)" :
+         "") * ". $claim $advice"))
+end
+
+# =============================================================================
+# The risk-set PLAN, and the three cache policies (issue Relevent#2)
+# =============================================================================
+#
+# Both estimators need, for every interval m (in time order): the case's index
+# into the full risk set, the waiting time, and the `n(n−1) × p` matrix of
+# statistics for EVERY dyad in the risk set, read off the strictly pre-event
+# interaction history (no look-ahead).
+#
+# Materializing all of those matrices costs `O(E · n(n−1) · p)` doubles — 8 GB
+# at (n, E, p) = (100, 2000, 6) — which put a ceiling on exact full-risk-set
+# estimation long before the arithmetic became infeasible. Everything else about
+# an interval is O(1) or O(n²) *once*, so the split is:
+#
+#   * `_RiskSetPlan` — the O(E + n²) skeleton, always materialized: which dyad
+#     is the case, the waiting time, the time at which the statistics are read,
+#     and which events the history absorbs after the interval is emitted (the
+#     tie-freeze policies absorb a whole block at once). Also the sparse Efron
+#     denominator weights: within a tie block every tied case takes the SAME
+#     weight 1 − (j−1)/d, so a list of dyad indices plus one scalar per interval
+#     replaces the dense `n(n−1)`-vector the old code stored per event.
+#
+#   * `_RiskSets` — the design matrices, under one of three policies:
+#       `:all`     every matrix materialized once (what the package always did):
+#                  fastest, and `O(E · n² · p)` memory.
+#       `:chunked` a BOUNDED cache of `chunk` matrices, refilled by replaying the
+#                  history from the start on each pass: `O(chunk · n² · p)`.
+#       `:none`    `:chunked` with `chunk = 1` — one matrix alive at a time.
+#     The passes visit the intervals in the SAME order under every policy and the
+#     matrices hold the same values (a design matrix is a deterministic function
+#     of the pre-interval history and the read time), so the likelihood, gradient
+#     and Hessian are accumulated in an identical order and the fits are
+#     bit-identical — asserted in the tests, not hoped for.
+#
+# `cache=:auto` (the default) is `:all` while the projected footprint fits in
+# `cache_bytes` (256 MiB) and `:chunked` above it — `:all` is the right default
+# where it is affordable, and it is exactly the case where it is NOT affordable
+# that the old code fell over.
 #
 # Statistics are converted to a tuple (mirroring REM's tuple-backed
 # StatisticSet) so the inner loop over dyads compiles to statically
 # dispatched compute calls instead of dynamic dispatch through an
 # abstractly-typed vector.
-_risk_set_stats(events::Vector{Event{T}}, statistics::AbstractVector, n_actors::Int;
-                kwargs...) where T =
-    _risk_set_stats(events, Tuple(statistics), n_actors; kwargs...)
 
-function _risk_set_stats(events::Vector{Event{T}}, statistics::Tuple, n_actors::Int;
-                         t0::T=zero(T)) where T
+const CACHE_MODES = (:auto, :all, :chunked, :none)
+const _DEFAULT_CACHE_BYTES = 1 << 28      # 256 MiB
+
+struct _RiskSetPlan{T, S<:Tuple}
+    sorted::Vector{Event{T}}
+    statistics::S
+    dyads::Vector{Tuple{Int,Int}}
+    p::Int
+    n_int::Int
+    case_idx::Vector{Int}          # 0 on the right-censored tail
+    waiting::Vector{Float64}
+    read_time::Vector{Float64}     # time at which interval m's statistics are read
+    absorb::Vector{UnitRange{Int}} # events absorbed AFTER interval m is emitted
+    # Efron denominator weights, sparsely: the tied dyads of interval m's block
+    # (shared, hence a per-interval reference) and the weight they take. `nothing`
+    # unless `ties=:efron` actually bit, which keeps the unweighted inner loop
+    # bit-for-bit as it was.
+    tw_dyads::Union{Nothing, Vector{Vector{Int}}}
+    tw_val::Union{Nothing, Vector{Float64}}
+end
+
+n_dyads(plan::_RiskSetPlan) = length(plan.dyads)
+
+# Bytes one design matrix costs, and the projected cost of caching all of them.
+_design_bytes(plan::_RiskSetPlan) = n_dyads(plan) * plan.p * sizeof(Float64)
+_full_cache_bytes(plan::_RiskSetPlan) = _design_bytes(plan) * plan.n_int
+
+_risk_set_plan(events::Vector{Event{T}}, statistics::AbstractVector, n_actors::Int;
+               kwargs...) where T =
+    _risk_set_plan(events, Tuple(statistics), n_actors; kwargs...)
+
+function _risk_set_plan(events::Vector{Event{T}}, statistics::Tuple, n_actors::Int;
+                        t0::T=zero(T), t_end::Union{Nothing,T}=nothing,
+                        ties::Symbol=:ordered) where T
     sorted = sort(events, by=e -> e.time)
-    if length(sorted) > 1 && !allunique(e.time for e in sorted)
-        @warn "Event sequence contains tied timestamps; ties are ordered " *
-              "arbitrarily and no tie correction is applied" maxlog = 1
-    end
+    blocks = _tie_blocks(sorted)
+    freeze = ties in (:breslow, :efron, :batch)
 
     p = length(statistics)
     dyads = [(s, r) for s in 1:n_actors for r in 1:n_actors if s != r]
-    history = InteractionHistory{T}()
+    dyad_index = Dict(dy => d for (d, dy) in enumerate(dyads))
 
     if !isempty(sorted) && t0 > sorted[1].time
         throw(ArgumentError("t0 = $t0 is after the first event time " *
@@ -665,31 +838,386 @@ function _risk_set_stats(events::Vector{Event{T}}, statistics::Tuple, n_actors::
                             "precede all events"))
     end
 
-    case_idx = Vector{Int}(undef, length(sorted))
-    X = Vector{Matrix{Float64}}(undef, length(sorted))
-    waiting = Vector{Float64}(undef, length(sorted))
-    t_prev = t0
+    if t_end !== nothing && !isempty(sorted) && t_end < sorted[end].time
+        throw(ArgumentError("t_end = $t_end is before the last event time " *
+                            "$(sorted[end].time); the observation window must " *
+                            "contain every event"))
+    end
+    n_int = length(sorted) + (t_end === nothing ? 0 : 1)
 
-    for (m, ev) in enumerate(sorted)
-        Xm = Matrix{Float64}(undef, length(dyads), p)
-        ci = 0
-        for (d, (s, r)) in enumerate(dyads)
-            vals = map(stat -> compute(stat, history, s, r, ev.time), statistics)
-            for k in 1:p
-                Xm[d, k] = vals[k]
-            end
-            (s == ev.sender && r == ev.receiver) && (ci = d)
+    case_idx = Vector{Int}(undef, n_int)
+    waiting = Vector{Float64}(undef, n_int)
+    read_time = Vector{Float64}(undef, n_int)
+    absorb = fill(1:0, n_int)
+    weighted = ties === :efron && any(b -> length(b) > 1, blocks)
+    tw_dyads = weighted ? Vector{Vector{Int}}(undef, n_int) : nothing
+    tw_val = weighted ? Vector{Float64}(undef, n_int) : nothing
+    t_prev = float(t0)
+
+    for block in blocks
+        d = length(block)
+        # Efron re-weights each tied CASE's contribution to ONE risk-set
+        # denominator; a dyad that is its own competitor has no such weight
+        # (and the naive one can go negative). Refuse rather than invent.
+        tied_dyads = [(sorted[k].sender, sorted[k].receiver) for k in block]
+        if ties === :efron && d > 1 && !allunique(tied_dyads)
+            throw(ArgumentError(
+                "ties=:efron requires the events tied at one timestamp to be " *
+                "distinct dyads, but a dyad acts twice at t = " *
+                "$(sorted[first(block)].time). Efron's correction re-weights each " *
+                "tied case's contribution to ONE risk-set denominator, and a " *
+                "risk-set member that is its own competitor has no such weight. " *
+                "Use `ties=:breslow` (whose denominator is the plain risk-set " *
+                "sum) or `ties=:ordered`."))
         end
-        ci > 0 || throw(ArgumentError("event $(m) references actors outside 1:$n_actors"))
-        case_idx[m] = ci
-        X[m] = Xm
-        waiting[m] = float(ev.time - t_prev)
-        t_prev = ev.time
 
-        update_history!(history, ev)
+        # Under a correction the whole block is read off the history as it stands
+        # BEFORE any of the tied events, at the block's (single) timestamp; the
+        # block is then absorbed as a whole, so no simultaneous event can enter
+        # another's statistics.
+        tb = float(sorted[first(block)].time)
+        shared = freeze && d > 1
+        tied_idx = weighted && d > 1 ?
+            [dyad_index[dy] for dy in tied_dyads] : Int[]
+
+        for (j, m) in enumerate(block)
+            ev = sorted[m]
+            ci = get(dyad_index, (ev.sender, ev.receiver), 0)
+            ci > 0 || throw(ArgumentError("event $(m) references actors outside 1:$n_actors"))
+            case_idx[m] = ci
+            waiting[m] = float(ev.time - t_prev)
+            t_prev = float(ev.time)
+            read_time[m] = shared ? tb : float(ev.time)
+            # Absorb the event now unless a tie correction is in force, in which
+            # case the whole block is absorbed after its last interval.
+            absorb[m] = freeze ? (m == last(block) ? block : (1:0)) : (m:m)
+            if weighted
+                tw_dyads[m] = tied_idx
+                tw_val[m] = d > 1 ? 1.0 - (j - 1) / d : 1.0
+            end
+        end
     end
 
-    return dyads, case_idx, X, waiting
+    # The right-censored tail: exposure from the last event to the end of
+    # observation, with no event term (case_idx == 0).
+    if t_end !== nothing
+        m = n_int
+        case_idx[m] = 0
+        waiting[m] = float(t_end - t_prev)
+        read_time[m] = float(t_end)
+        if weighted
+            tw_dyads[m] = Int[]
+            tw_val[m] = 1.0
+        end
+    end
+
+    return _RiskSetPlan(sorted, statistics, dyads, p, n_int, case_idx, waiting,
+                        read_time, absorb, tw_dyads, tw_val)
+end
+
+# Interval m's design matrix, into `dest`, against `history` as it stands before
+# the interval. A deterministic function of (history, read time): this is why the
+# cached and streamed policies agree bit-for-bit.
+function _fill_design!(dest::AbstractMatrix{Float64}, plan::_RiskSetPlan, history,
+                       m::Int)
+    t = plan.read_time[m]
+    stats = plan.statistics
+    @inbounds for (dd, (s, r)) in enumerate(plan.dyads)
+        vals = map(stat -> compute(stat, history, s, r, t), stats)
+        for k in 1:plan.p
+            dest[dd, k] = vals[k]
+        end
+    end
+    return dest
+end
+
+_absorb!(history, plan::_RiskSetPlan, m::Int) =
+    (for k in plan.absorb[m]; update_history!(history, plan.sorted[k]); end; history)
+
+# The Efron denominator weights of interval m, materialized into the reusable
+# buffer `buf` — or `nothing` when no weight bites, which is every policy but a
+# biting `:efron` and keeps the unweighted inner loop exactly as it was.
+function _tie_weights!(buf::Vector{Float64}, plan::_RiskSetPlan, m::Int)
+    plan.tw_dyads === nothing && return nothing
+    fill!(buf, 1.0)
+    w = plan.tw_val[m]
+    @inbounds for d in plan.tw_dyads[m]
+        buf[d] = w
+    end
+    return buf
+end
+
+abstract type _RiskSets end
+
+# `cache=:all` — every design matrix materialized once. Fastest; O(E · n² · p).
+struct _CachedRiskSets{T,S} <: _RiskSets
+    plan::_RiskSetPlan{T,S}
+    X::Vector{Matrix{Float64}}
+    tw_buf::Vector{Float64}
+end
+
+# `cache=:chunked` / `:none` — a bounded cache of `length(buffers)` design
+# matrices, refilled by replaying the interaction history from the start on every
+# pass. `:none` is `chunk = 1`. Memory O(chunk · n² · p); the price is that the
+# statistics are recomputed once per derivative evaluation instead of once.
+struct _StreamedRiskSets{T,S} <: _RiskSets
+    plan::_RiskSetPlan{T,S}
+    buffers::Vector{Matrix{Float64}}
+    history::InteractionHistory{T}
+    tw_buf::Vector{Float64}
+end
+
+peak_design_bytes(rs::_CachedRiskSets) = _full_cache_bytes(rs.plan)
+peak_design_bytes(rs::_StreamedRiskSets) =
+    length(rs.buffers) * _design_bytes(rs.plan)
+
+# Visit the intervals in time order, calling `f(m, Xm, twm)` on each: `Xm` is the
+# risk-set design matrix and `twm` the Efron denominator weights (or `nothing`).
+# The order is the same under every policy, so any accumulation over `f` is
+# summed in the same order and lands on the same floating-point number.
+function each_interval(f::F, rs::_CachedRiskSets) where F
+    plan = rs.plan
+    for m in 1:plan.n_int
+        f(m, rs.X[m], _tie_weights!(rs.tw_buf, plan, m))
+    end
+    return nothing
+end
+
+function each_interval(f::F, rs::_StreamedRiskSets) where F
+    plan = rs.plan
+    history = _reset_history!(rs.history)
+    k = length(rs.buffers)
+    m = 1
+    while m <= plan.n_int
+        hi = min(m + k - 1, plan.n_int)
+        # Fill the chunk, walking the history forward as we go...
+        for j in m:hi
+            _fill_design!(rs.buffers[j - m + 1], plan, history, j)
+            _absorb!(history, plan, j)
+        end
+        # ...then consume it. (Tied intervals under a freeze policy share one
+        # matrix in `:all`; here they are recomputed, which costs a little and
+        # gives the identical values — the history is frozen and the read time is
+        # the block's.)
+        for j in m:hi
+            f(j, rs.buffers[j - m + 1], _tie_weights!(rs.tw_buf, plan, j))
+        end
+        m = hi + 1
+    end
+    return nothing
+end
+
+function _reset_history!(history::InteractionHistory)
+    empty!(history.events)
+    empty!(history.sender_history)
+    empty!(history.receiver_history)
+    empty!(history.pair_history)
+    empty!(history.event_counts)
+    return history
+end
+
+# Resolve `cache=:auto` to a concrete policy and a concrete cache size, in design
+# matrices. `chunk` defaults to as many as fit in `cache_bytes`; a chunk that
+# covers every interval IS `:all` (same memory, but the streamed path would
+# recompute every statistic on every pass for nothing), so it collapses to it.
+# Returns `(mode, k)` with `k` the number of matrices alive at once, so the
+# footprint a fit will pay is `k * _design_bytes(plan)` — computable without
+# allocating any of it.
+function _resolve_cache(plan::_RiskSetPlan; cache::Symbol=:auto,
+                        chunk::Union{Nothing,Int}=nothing,
+                        cache_bytes::Int=_DEFAULT_CACHE_BYTES)
+    cache in CACHE_MODES || throw(ArgumentError(
+        "cache must be one of $(CACHE_MODES), got :$cache. `:all` materializes " *
+        "every risk-set design matrix (fastest, O(E·n²·p) memory), `:chunked` " *
+        "keeps a bounded cache of `chunk` of them and recomputes the rest on " *
+        "each pass, `:none` keeps exactly one, and `:auto` picks `:all` when " *
+        "the projected footprint fits in `cache_bytes`."))
+    chunk === nothing || chunk >= 1 ||
+        throw(ArgumentError("chunk must be at least 1, got $chunk"))
+
+    mode = cache
+    mode === :auto &&
+        (mode = _full_cache_bytes(plan) <= cache_bytes ? :all : :chunked)
+    mode === :none && return (:none, 1)
+    if mode === :chunked
+        k = something(chunk, cache_bytes ÷ max(1, _design_bytes(plan)))
+        k >= plan.n_int && return (:all, plan.n_int)
+        return (:chunked, max(1, k))
+    end
+    return (:all, plan.n_int)
+end
+
+function _risk_sets(plan::_RiskSetPlan{T,S}; cache::Symbol=:auto,
+                    chunk::Union{Nothing,Int}=nothing,
+                    cache_bytes::Int=_DEFAULT_CACHE_BYTES) where {T,S}
+    mode, k = _resolve_cache(plan; cache=cache, chunk=chunk,
+                             cache_bytes=cache_bytes)
+    D = n_dyads(plan)
+    tw_buf = plan.tw_dyads === nothing ? Float64[] : Vector{Float64}(undef, D)
+
+    if mode === :all
+        history = InteractionHistory{T}()
+        X = Vector{Matrix{Float64}}(undef, plan.n_int)
+        m = 1
+        while m <= plan.n_int
+            Xm = Matrix{Float64}(undef, D, plan.p)
+            _fill_design!(Xm, plan, history, m)
+            X[m] = Xm
+            # A frozen tie block reads ONE matrix off ONE history at ONE time:
+            # share it rather than recomputing (and re-storing) it per event.
+            hi = m
+            while hi < plan.n_int && isempty(plan.absorb[hi])
+                hi += 1
+                X[hi] = Xm
+            end
+            for j in m:hi
+                _absorb!(history, plan, j)
+            end
+            m = hi + 1
+        end
+        return _CachedRiskSets(plan, X, tw_buf)
+    end
+
+    buffers = [Matrix{Float64}(undef, D, plan.p) for _ in 1:k]
+    return _StreamedRiskSets(plan, buffers, InteractionHistory{T}(), tw_buf)
+end
+
+# The eager 5-tuple the package was built on: `(dyads, case_idx, X, waiting, W)`
+# with every design matrix and every dense Efron weight vector materialized.
+# `cache=:all` in one call — kept because it is the clearest statement of what
+# the risk sets ARE, and the tests read it directly.
+_risk_set_stats(events::Vector{Event{T}}, statistics::AbstractVector, n_actors::Int;
+                kwargs...) where T =
+    _risk_set_stats(events, Tuple(statistics), n_actors; kwargs...)
+
+function _risk_set_stats(events::Vector{Event{T}}, statistics::Tuple, n_actors::Int;
+                         kwargs...) where T
+    plan = _risk_set_plan(events, statistics, n_actors; kwargs...)
+    rs = _risk_sets(plan; cache=:all)
+    W = plan.tw_dyads === nothing ? nothing :
+        [copy(_tie_weights!(Vector{Float64}(undef, n_dyads(plan)), plan, m))
+         for m in 1:plan.n_int]
+    return plan.dyads, plan.case_idx, rs.X, plan.waiting, W
+end
+
+# =============================================================================
+# The two derivative closures (review finding 15)
+# =============================================================================
+#
+# Both are `θ -> (ll, grad, hess)` for `_newton`, and both run on workspaces
+# allocated ONCE here rather than per interval per Newton evaluation. What a
+# single evaluation allocates is the O(p) gradient and O(p²) Hessian handed back
+# to the optimizer — and nothing else: no `Xm * θ`, no `exp.(η)`, no
+# `Xm' * (w .* Xm)` weighted copy of the risk-set design matrix, no per-event
+# outer product. Pinned by an `@allocated` regression test, which is why they are
+# named functions and not closures buried inside the fitters: the test measures
+# the code that runs, not a copy of it.
+
+# Ordinal (multinomial partial) likelihood over the full risk set.
+function _obpm_derivatives(rs::_RiskSets)
+    plan = rs.plan
+    p = plan.p
+    D = n_dyads(plan)
+    case_idx = plan.case_idx
+    η = Vector{Float64}(undef, D)
+    probs = Vector{Float64}(undef, D)
+    W = Matrix{Float64}(undef, D, p)
+    x_exp = Vector{Float64}(undef, p)
+
+    return function (θ)
+        ll = Ref(0.0)
+        grad = zeros(p)
+        hess = zeros(p, p)
+        # `twm === nothing` is the unweighted likelihood (every policy but a
+        # biting `:efron`), left bit-for-bit as it was. Under Efron the
+        # DENOMINATOR carries the tied cases' weights 1 − (j−1)/d; the
+        # numerator is always the case's own exp(η).
+        each_interval(rs) do m, Xm, twm
+            mul!(η, Xm, θ)
+            ηmax = maximum(η)
+            Z = 0.0
+            if twm === nothing
+                @inbounds for d in 1:D
+                    probs[d] = exp(η[d] - ηmax)
+                    Z += probs[d]
+                end
+            else
+                @inbounds for d in 1:D
+                    probs[d] = twm[d] * exp(η[d] - ηmax)
+                    Z += probs[d]
+                end
+            end
+            probs ./= Z
+
+            ll[] += η[case_idx[m]] - ηmax - log(Z)
+
+            mul!(x_exp, transpose(Xm), probs)
+            @inbounds for k in 1:p
+                grad[k] += Xm[case_idx[m], k] - x_exp[k]
+            end
+            # -E[XX'] by gemm on the sqrt(prob)-weighted rows, +E[X]E[X]' by a
+            # rank-1 update — both in place into `hess`.
+            W .= sqrt.(probs) .* Xm
+            mul!(hess, transpose(W), W, -1.0, 1.0)
+            BLAS.ger!(1.0, x_exp, x_exp, hess)
+        end
+        return ll[], grad, hess
+    end
+end
+
+# Exponential-baseline interval (exact-time) likelihood; β = (log λ₀, θ).
+function _timing_derivatives(rs::_RiskSets)
+    plan = rs.plan
+    p = plan.p
+    D = n_dyads(plan)
+    case_idx, waiting = plan.case_idx, plan.waiting
+    θbuf = Vector{Float64}(undef, p)
+    η = Vector{Float64}(undef, D)
+    w = Vector{Float64}(undef, D)
+    WX = Matrix{Float64}(undef, D, p)
+    Sx = Vector{Float64}(undef, p)
+    Sxx = Matrix{Float64}(undef, p, p)
+
+    return function (β)
+        logλ = β[1]
+        copyto!(θbuf, 1, β, 2, p)
+        λ = exp(logλ)
+
+        ll = Ref(0.0)
+        grad = zeros(p + 1)
+        hess = zeros(p + 1, p + 1)
+
+        each_interval(rs) do m, Xm, _
+            mul!(η, Xm, θbuf)
+            w .= exp.(η)
+            S = sum(w)                      # Σ exp(θ'x)
+            mul!(Sx, transpose(Xm), w)      # Σ x exp(θ'x)
+            WX .= w .* Xm
+            mul!(Sxx, transpose(Xm), WX)    # Σ xx' exp(θ'x)
+            Δt = waiting[m]
+            ci = case_idx[m]                # 0 for the right-censored tail
+            observed = ci > 0
+
+            # Every interval contributes exposure; only an interval that
+            # ends in an event contributes an event term.
+            ll[] += (observed ? logλ + η[ci] : 0.0) - λ * Δt * S
+
+            λΔt = λ * Δt
+            grad[1] += (observed ? 1.0 : 0.0) - λΔt * S
+            hess[1, 1] += -λΔt * S
+            @inbounds for k in 1:p
+                observed && (grad[k + 1] += Xm[ci, k])
+                grad[k + 1] -= λΔt * Sx[k]
+                hess[1, k + 1] += -λΔt * Sx[k]
+                hess[k + 1, 1] += -λΔt * Sx[k]
+                for l in 1:p
+                    hess[l + 1, k + 1] -= λΔt * Sxx[l, k]
+                end
+            end
+        end
+
+        return ll[], grad, hess
+    end
 end
 
 # Newton-Raphson with step-halving on a concave objective returning
@@ -773,7 +1301,15 @@ struct OrdinalBPMResult
     loglik::Float64
     converged::Bool
     n_events::Int
+    # What was ACTUALLY done with tied event times: `:none` (the data had no
+    # ties), or the policy that bit — `:ordered`, `:breslow`, `:efron`. `:error`
+    # can never appear: under it a tie throws instead of fitting.
+    tie_type::Symbol
 end
+
+OrdinalBPMResult(model, coefficients, std_errors, loglik, converged, n_events) =
+    OrdinalBPMResult(model, coefficients, std_errors, loglik, converged, n_events,
+                     :none)
 
 # z statistics and two-sided normal (Wald) p-values for a coefficient table;
 # NaN where the standard error is unavailable.
@@ -790,10 +1326,105 @@ function Base.show(io::IO, result::OrdinalBPMResult)
     println(io, "N events: $(result.n_events)")
     println(io, "Log-likelihood: $(round(result.loglik, digits=4))")
     println(io, "Converged: $(result.converged)")
+    result.tie_type === :none ||
+        println(io, "Tied event times: $(result.tie_type)")
     println(io)
     z, p = _wald_zp(result.coefficients, result.std_errors)
     print_coeftable(io, [name(stat) for stat in result.model.statistics],
                     result.coefficients, result.std_errors, p; z_values=z)
+end
+
+# ============================================================================
+# The shared result-metadata protocol (Networks.jl `src/results.jl`)
+# ============================================================================
+#
+# Both Relevent models enumerate the FULL risk set — this is the package's
+# distinguishing property against `REM.fit_rem`, which samples controls — so
+# their objectives ARE the exact likelihoods. `fit_metadata(fit)` makes that
+# claim inspectable rather than a sentence in a docstring, and it names the one
+# approximation that remains: tied timestamps are ordered arbitrarily.
+
+estimand(::OrdinalBPMResult) = :relational_event
+
+"""
+    objective(::OrdinalBPMResult) -> Symbol
+
+`:likelihood` — the ordinal relational-event likelihood: each event contributes a
+multinomial-logit term over the **full risk set** of all `n(n−1)` dyads. Nothing
+is sampled and nothing is approximated away.
+"""
+objective(::OrdinalBPMResult) = :likelihood
+
+"""
+    is_exact(result::OrdinalBPMResult) -> Bool
+
+`true` on strictly ordered data. The objective IS the exact ordinal likelihood of
+the model (full risk set, no case-control sampling — compare `REM.fit_rem`, whose
+default sampled risk set makes the same kind of objective an approximation),
+maximized by Newton-Raphson to a stationary point.
+
+`false` when the data carried **tied timestamps** (`tie_type != :none`): the
+ordinal likelihood is a likelihood over an order the tied data does not
+determine, and every policy that lets the fit proceed — `:ordered`, `:breslow`,
+`:efron` — is an approximation to it.
+"""
+is_exact(result::OrdinalBPMResult) = result.tie_type === :none
+
+se_method(::OrdinalBPMResult) = :hessian
+
+missing_method(::OrdinalBPMResult) = :none
+
+"""
+    tie_method(result::OrdinalBPMResult) -> Symbol
+
+What was ACTUALLY done with tied event times: `:none` (the data had none),
+`:ordered`, `:breslow` or `:efron`. `:error` — the default policy — never
+appears, because under it a tie throws instead of fitting. See `ties=` in
+[`fit_obpm`](@ref).
+"""
+tie_method(result::OrdinalBPMResult) = result.tie_type
+
+# Prose for the tie policy that actually bit; `nothing` when the data had no
+# ties, since a correction on tie-free data corrected nothing.
+function _tie_approximation(tie_type::Symbol)
+    if tie_type === :ordered
+        return "tied event times were ordered arbitrarily with NO tie correction " *
+               "(`ties=:ordered`): the ordinal likelihood is a likelihood over the " *
+               "ORDER of events, and the event placed first also enters the " *
+               "statistics of the events placed after it, so the estimate depends " *
+               "on a sort the data does not determine"
+    elseif tie_type === :breslow
+        return "tied event times were handled by the BRESLOW correction " *
+               "(`ties=:breslow`): the tied events share one risk set (statistics " *
+               "frozen across the tie) and each contributes the same denominator. " *
+               "An approximation to the average over the d! orderings, and the " *
+               "cruder of the two — it biases coefficients toward zero as ties get " *
+               "heavier (`ties=:efron` is the better approximation)"
+    elseif tie_type === :efron
+        return "tied event times were handled by the EFRON correction " *
+               "(`ties=:efron`): the tied cases enter the j-th denominator with " *
+               "weight 1 − (j−1)/d. A close approximation to the average over the " *
+               "d! orderings — what `survival::coxph` defaults to — but the order " *
+               "of simultaneous events remains unobserved"
+    elseif tie_type === :batch
+        return "tied event times were read as a simultaneous BATCH (`ties=:batch`): " *
+               "the tied events could not influence one another (statistics frozen " *
+               "across the block) and the block consumes ONE exposure interval. " *
+               "This is the coarsened-observation model, NOT the continuous-time " *
+               "model the likelihood otherwise assumes — under which a tie has " *
+               "probability zero"
+    end
+    return nothing
+end
+
+function approximations(result::OrdinalBPMResult)
+    out = String[]
+    result.converged ||
+        push!(out, "the Newton-Raphson maximization did NOT converge: the reported " *
+                   "estimates are not a stationary point of the likelihood")
+    tie_note = _tie_approximation(result.tie_type)
+    isnothing(tie_note) || push!(out, tie_note)
+    return out
 end
 
 """
@@ -831,60 +1462,87 @@ function rank_events(events::Vector{Event{T}}) where T
 end
 
 """
-    fit_obpm(events, statistics, n_actors; maxiter=100, tol=1e-8) -> OrdinalBPMResult
+    fit_obpm(events, statistics, n_actors; ties=:error, cache=:auto, chunk=nothing,
+             maxiter=100, tol=1e-8) -> OrdinalBPMResult
 
 Fit the ordinal relational event model by exact maximum likelihood over
 the full risk set (Newton-Raphson with step-halving).
+
+# Risk-set caching (issue Relevent#2)
+
+The full risk set means an `n(n−1) × p` design matrix per event. Materializing
+them all costs `O(E · n² · p)` doubles — 8 GB at `(n, E, p) = (100, 2000, 6)` —
+so `cache=` decides how many are alive at once:
+
+- `:auto` (default) — `:all` while the projected footprint fits in `cache_bytes`
+  (256 MiB), `:chunked` above it.
+- `:all` — every design matrix materialized once. Fastest; `O(E · n² · p)`.
+- `:chunked` — a bounded cache of `chunk` matrices (default: as many as fit in
+  `cache_bytes`), refilled by replaying the event history on each pass.
+- `:none` — `:chunked` with `chunk = 1`: one matrix alive at a time, least
+  memory, most recomputation.
+
+Every policy visits the intervals in the same order and reads the same
+statistics off the same histories, so **the fits are bit-identical** — asserted
+in the tests. Only memory and time differ.
+
+# Tied event times (issue Relevent#1, review finding 12)
+
+This likelihood is a likelihood **over the order of the events** — it uses
+nothing else. A tied timestamp therefore means the very thing being modelled is
+unobserved, and sorting the tie invents it (worse: the statistics are read off
+the pre-event history, so the event sorted first enters the *statistics* of the
+one sorted second). `ties=` (the shared `Networks.TIE_POLICIES` vocabulary) says
+what to do about it:
+
+- `:error` (default) — name the tie and refuse. A user with tied data is told,
+  not handed a number that depends on an arbitrary sort.
+- `:ordered` — sequence order, no correction (what the package did before).
+- `:breslow` — the Breslow correction: the tied events share one risk set (the
+  history is frozen across the tie block, so they cannot enter each other's
+  statistics) and each contributes the same denominator.
+- `:efron` — the Efron correction: as `:breslow`, plus the `1 − (j−1)/d`
+  denominator weights on the tied cases; the better approximation, and what
+  `survival::coxph` defaults to. Requires the tied events to be distinct dyads.
+- `:batch` — refused: with the history frozen, a simultaneous batch in an ordinal
+  likelihood IS the Breslow correction. (It is `fit_timing`'s policy, where there
+  is an exposure interval for a batch to consume.)
+
+On tie-free data all four give the identical fit. `tie_method(fit)` reports what
+actually happened and `approximations(fit)` carries the caveat.
 """
 function fit_obpm(events::Vector{Event{T}}, statistics::Vector{<:AbstractStatistic},
-                  n_actors::Int; maxiter::Int=100, tol::Float64=1e-8) where T
+                  n_actors::Int; ties::Symbol=:error, cache::Symbol=:auto,
+                  chunk::Union{Nothing,Int}=nothing,
+                  cache_bytes::Int=_DEFAULT_CACHE_BYTES, maxiter::Int=100,
+                  tol::Float64=1e-8) where T
+    check_tie_policy(ties, _OBPM_TIES_SUPPORTED; model=_OBPM_TIES_MODEL,
+                     reasons=_OBPM_TIES_REASONS)
     model = OrdinalBPM(collect(AbstractStatistic, statistics), n_actors)
     p = length(statistics)
     isempty(events) && throw(ArgumentError("no events to fit"))
 
-    _, case_idx, X, _ = _risk_set_stats(events, model.statistics, n_actors)
-    M = length(X)
+    sorted = sort(events, by=e -> e.time)
+    blocks = _tie_blocks(sorted)
+    has_ties = any(b -> length(b) > 1, blocks)
+    ties === :error && has_ties && _reject_ties(sorted, blocks,
+        "The ordinal likelihood is a likelihood over the ORDER of the events, " *
+        "and a tie is precisely the statement that the order is unobserved: " *
+        "sorting it would invent the very thing being modelled (and would let " *
+        "whichever event is placed first enter the statistics of the ones placed " *
+        "after it).",
+        "Choose a policy explicitly: `ties=:efron` (the Efron correction, the " *
+        "best approximation and `survival::coxph`'s default), `ties=:breslow` " *
+        "(the Breslow correction), or `ties=:ordered` (the legacy behaviour — " *
+        "arbitrary order, no correction).")
+    tie_applied = has_ties ? ties : :none
 
-    # Preallocated buffers shared by every derivative evaluation (all risk
-    # sets have the same size); the Hessian is accumulated in place via
-    # BLAS (gemm on sqrt(prob)-weighted rows for -E[XX'], ger! for the
-    # +E[X]E[X]' rank-1 update) instead of allocating per-event matrices.
-    D = size(X[1], 1)
-    η = Vector{Float64}(undef, D)
-    probs = Vector{Float64}(undef, D)
-    W = Matrix{Float64}(undef, D, p)
-    x_exp = Vector{Float64}(undef, p)
+    plan = _risk_set_plan(events, model.statistics, n_actors; ties=ties)
+    rs = _risk_sets(plan; cache=cache, chunk=chunk, cache_bytes=cache_bytes)
 
-    function derivatives(θ)
-        ll = 0.0
-        grad = zeros(p)
-        hess = zeros(p, p)
-        for m in 1:M
-            Xm = X[m]
-            mul!(η, Xm, θ)
-            ηmax = maximum(η)
-            Z = 0.0
-            @inbounds for d in 1:D
-                probs[d] = exp(η[d] - ηmax)
-                Z += probs[d]
-            end
-            probs ./= Z
-
-            ll += η[case_idx[m]] - ηmax - log(Z)
-
-            mul!(x_exp, transpose(Xm), probs)
-            @inbounds for k in 1:p
-                grad[k] += Xm[case_idx[m], k] - x_exp[k]
-            end
-            W .= sqrt.(probs) .* Xm
-            mul!(hess, transpose(W), W, -1.0, 1.0)
-            BLAS.ger!(1.0, x_exp, x_exp, hess)
-        end
-        return ll, grad, hess
-    end
-
-    θ, se, ll, converged = _newton(derivatives, p; maxiter=maxiter, tol=tol)
-    return OrdinalBPMResult(model, θ, se, ll, converged, length(events))
+    θ, se, ll, converged = _newton(_obpm_derivatives(rs), p; maxiter=maxiter,
+                                   tol=tol)
+    return OrdinalBPMResult(model, θ, se, ll, converged, length(events), tie_applied)
 end
 
 # =============================================================================
@@ -925,7 +1583,14 @@ struct TimingModelResult
     std_errors::Vector{Float64}
     loglik::Float64
     converged::Bool
+    # What was ACTUALLY done with tied event times: `:none` (the data had none —
+    # which is what a continuous-time model expects), `:ordered` or `:batch`.
+    tie_type::Symbol
 end
+
+TimingModelResult(model, coefficients, baseline_params, std_errors, loglik, converged) =
+    TimingModelResult(model, coefficients, baseline_params, std_errors, loglik,
+                      converged, :none)
 
 function Base.show(io::IO, result::TimingModelResult)
     println(io, "Timing Model Results")
@@ -934,10 +1599,87 @@ function Base.show(io::IO, result::TimingModelResult)
     println(io, "Baseline rate λ₀: $(round(result.baseline_params[1], digits=6))")
     println(io, "Log-likelihood: $(round(result.loglik, digits=4))")
     println(io, "Converged: $(result.converged)")
+    result.tie_type === :none ||
+        println(io, "Tied event times: $(result.tie_type) " *
+                    "(a continuous-time model gives a tie probability zero)")
     println(io)
     z, p = _wald_zp(result.coefficients, result.std_errors)
     print_coeftable(io, [name(stat) for stat in result.model.statistics],
                     result.coefficients, result.std_errors, p; z_values=z)
+end
+
+# The shared result-metadata protocol (see the OrdinalBPMResult block above).
+
+estimand(::TimingModelResult) = :relational_event_timing
+
+"""
+    objective(::TimingModelResult) -> Symbol
+
+`:likelihood` — the exact interval-timing likelihood over the **full risk set**:
+`ℓ(λ₀, θ) = Σ_m [log λ₀ + θ'x_case − λ₀ Δt_m Σ_{ij} exp(θ'x_ij)]`, with the
+per-dyad hazards of every dyad entering each waiting-time term. `(log λ₀, θ)` are
+maximized jointly.
+"""
+objective(::TimingModelResult) = :likelihood
+
+"""
+    is_exact(result::TimingModelResult) -> Bool
+
+`true` on data with no tied event times. The objective IS the exact likelihood of
+the fitted model — the exponential-baseline proportional-hazards process with
+statistics held constant between events (that piecewise-constant hazard is the
+model's definition, not an approximation of it). Weibull/Gompertz baselines are
+not fitted at all, so no `TimingModelResult` can carry an approximate likelihood.
+
+`false` when the data carried **ties** (`tie_type != :none`). This is the sharp
+case in the ecosystem: under a continuous-time model a tie has probability
+**zero**, so tied data does not merely strain the likelihood, it contradicts the
+process. Whatever the policy then computes (`:ordered` — a zero-length waiting
+interval; `:batch` — a coarsened simultaneous batch) is the likelihood of a
+*different* model from the one the user asked for.
+"""
+is_exact(result::TimingModelResult) = result.tie_type === :none
+
+se_method(::TimingModelResult) = :hessian
+
+missing_method(::TimingModelResult) = :none
+
+"""
+    tie_method(result::TimingModelResult) -> Symbol
+
+What was ACTUALLY done with tied event times: `:none` (the data had none, which
+is what a continuous-time model expects), `:ordered` (each tied event after the
+first enters with a zero-length waiting interval, in an arbitrary order, while
+still updating the history) or `:batch` (the tie is one simultaneous batch:
+statistics frozen across it, one exposure interval for the block). `:error` — the
+default — never appears: under it a tie throws. Breslow and Efron are not
+available here at all; see `ties=` in [`fit_timing`](@ref).
+"""
+tie_method(result::TimingModelResult) = result.tie_type
+
+function approximations(result::TimingModelResult)
+    out = String[]
+    result.converged ||
+        push!(out, "the Newton-Raphson maximization did NOT converge: the reported " *
+                   "estimates are not a stationary point of the likelihood")
+    if result.tie_type === :ordered
+        push!(out, "tied event times were ordered arbitrarily with NO correction " *
+                   "(`ties=:ordered`): each tied event after the first enters as a " *
+                   "ZERO-LENGTH waiting interval — it contributes an event term with " *
+                   "no exposure — while still updating the statistics of the next, " *
+                   "i.e. the fit claims one event caused another in no time at all. " *
+                   "Under the continuous-time model being fitted, a tie has " *
+                   "probability zero")
+    elseif result.tie_type === :batch
+        push!(out, "tied event times were read as a simultaneous BATCH " *
+                   "(`ties=:batch`): the tied events could not have influenced one " *
+                   "another (statistics frozen across the block) and the block " *
+                   "consumes ONE exposure interval. This is the likelihood of a " *
+                   "COARSENED observation process, not of the continuous-time model " *
+                   "the exponential likelihood otherwise assumes — under which a tie " *
+                   "has probability zero")
+    end
+    return out
 end
 
 """
@@ -1002,7 +1744,8 @@ end
 
 """
     fit_timing(events, statistics, n_actors; baseline=:exponential,
-               t0=zero(T), maxiter=100, tol=1e-8) -> TimingModelResult
+               t0=zero(T), cache=:auto, chunk=nothing, maxiter=100, tol=1e-8)
+        -> TimingModelResult
 
 Fit the interval-timing relational event model with an exponential
 baseline by exact maximum likelihood: with waiting time `Δt_m` before
@@ -1023,58 +1766,102 @@ to onset of observation" (i.e. the clock starts at 0). For a
 left-truncated observation window — a process already running when
 recording started — pass the window start as `t0` so the first interval
 is not overstated; `t0` must not exceed the first event time.
+
+`t_end` is the observation *offset*, i.e. the time recording stopped. It
+adds the right-censored final interval `[t_M, t_end]` — exposure with no
+event — to the likelihood:
+
+    ℓ += − λ₀ (t_end − t_M) Σ_{ij} exp(θ'x_ij).
+
+`relevent::rem.dyad` **always** has this term (its last edgelist row is
+the termination time, and any event on it is ignored), so `t_end` is
+required to reproduce it: with `t_end = nothing` (the default) the
+sequence is treated as ending at its last event, and the estimated
+baseline rate λ₀ is biased upward, because the observation window is
+implicitly shortened to exclude the eventless tail.
+
+!!! note "Golden fixture"
+    `test/fixtures/relevent_rem_dyad.toml` freezes `rem.dyad`'s temporal fit
+    and pins both facts: with `t_end` the two agree to ~1e-6, and without
+    it λ₀ differs in the second decimal.
+
+# Risk-set caching (issue Relevent#2)
+
+`cache=:auto|:all|:chunked|:none` (with `chunk` and `cache_bytes`) bounds the
+memory the `E × n(n−1) × p` risk-set design matrices take, exactly as in
+[`fit_obpm`](@ref) — same policies, same defaults, and the fit is bit-identical
+under all of them.
+
+# Tied event times (issue Relevent#1, review finding 12)
+
+This is an **exact-time** likelihood. Under the continuous-time process it fits,
+two events at one instant have probability **zero**: a tie is not an ambiguity in
+the ordering, it is the model's own assumption failing. It is therefore either a
+measurement artifact (a coarse clock) or a genuinely batched observation, and the
+policies (`Networks.TIE_POLICIES`) say which:
+
+- `ties=:error` (default) — name the tie and refuse.
+- `ties=:ordered` — the legacy behaviour: each tied event after the first enters
+  with a **zero-length waiting interval** (an event term with no exposure) while
+  still updating the statistics of the next — the fit then claims one event
+  caused another in no time at all.
+- `ties=:batch` — read the tie as one simultaneous batch: the statistics are
+  frozen across the block (no tied event can have influenced another) and the
+  block consumes **one** exposure interval. This is the coarsened-observation
+  reading, and the one to prefer when the clock is simply coarse.
+- `ties=:breslow` / `ties=:efron` — **refused**, and not as a matter of taste:
+  Breslow and Efron correct a *partial* likelihood, in which the baseline hazard
+  is profiled out and only the order of events survives. There is no such
+  denominator here. Fit `fit_obpm(...; ties=:efron)` if the order is what
+  matters.
+
+On tie-free data every policy gives the identical fit. `tie_method(fit)` reports
+what happened; `is_exact(fit)` turns **false** as soon as a tie was in the data,
+because no policy can make an exact-time likelihood exact for data the exact-time
+model says cannot occur.
 """
 function fit_timing(events::Vector{Event{T}}, statistics::Vector{<:AbstractStatistic},
                     n_actors::Int; baseline::Symbol=:exponential,
-                    t0::T=zero(T),
+                    t0::T=zero(T), t_end::Union{Nothing,T}=nothing,
+                    ties::Symbol=:error, cache::Symbol=:auto,
+                    chunk::Union{Nothing,Int}=nothing,
+                    cache_bytes::Int=_DEFAULT_CACHE_BYTES,
                     maxiter::Int=100, tol::Float64=1e-8) where T
+    check_tie_policy(ties, _TIMING_TIES_SUPPORTED; model=_TIMING_TIES_MODEL,
+                     reasons=_TIMING_TIES_REASONS)
     model = TimingModel(collect(AbstractStatistic, statistics); baseline=baseline)
     baseline == :exponential ||
         error("fit_timing implements the exponential-baseline likelihood; " *
               ":$baseline is available only for hazard_rate/survival_function")
     isempty(events) && throw(ArgumentError("no events to fit"))
 
+    sorted = sort(events, by=e -> e.time)
+    blocks = _tie_blocks(sorted)
+    has_ties = any(b -> length(b) > 1, blocks)
+    ties === :error && has_ties && _reject_ties(sorted, blocks,
+        "This is an EXACT-TIME likelihood: under the continuous-time process it " *
+        "fits, two events at one instant have probability ZERO, so a tie is not " *
+        "an ambiguous ordering but the model's own assumption failing — the clock " *
+        "is coarse, or the events are genuinely simultaneous.",
+        "Say which: `ties=:batch` (a coarsened simultaneous batch — the tied " *
+        "events cannot influence one another and the block consumes one exposure " *
+        "interval) or `ties=:ordered` (the legacy behaviour — each tied event " *
+        "after the first enters with a zero-length waiting interval). Breslow and " *
+        "Efron do not apply to an exact-time likelihood; use " *
+        "`fit_obpm(...; ties=:efron)` if only the order matters.")
+    tie_applied = has_ties ? ties : :none
+
     p = length(statistics)
-    _, case_idx, X, waiting = _risk_set_stats(events, model.statistics, n_actors; t0=t0)
-    M = length(X)
-
-    # Parameters: β = (log λ₀, θ)
-    function derivatives(β)
-        logλ = β[1]
-        θ = β[2:end]
-        λ = exp(logλ)
-
-        ll = 0.0
-        grad = zeros(p + 1)
-        hess = zeros(p + 1, p + 1)
-
-        for m in 1:M
-            Xm = X[m]
-            η = Xm * θ
-            w = exp.(η)
-            S = sum(w)                      # Σ exp(θ'x)
-            Sx = Xm' * w                    # Σ x exp(θ'x)
-            Sxx = Xm' * (w .* Xm)           # Σ xx' exp(θ'x)
-            Δt = waiting[m]
-
-            ll += logλ + η[case_idx[m]] - λ * Δt * S
-
-            grad[1] += 1.0 - λ * Δt * S
-            grad[2:end] .+= Xm[case_idx[m], :] .- λ .* Δt .* Sx
-
-            hess[1, 1] += -λ * Δt * S
-            hess[1, 2:end] .+= -λ .* Δt .* Sx
-            hess[2:end, 1] .+= -λ .* Δt .* Sx
-            hess[2:end, 2:end] .-= λ .* Δt .* Sxx
-        end
-
-        return ll, grad, hess
-    end
+    plan = _risk_set_plan(events, model.statistics, n_actors;
+                          t0=t0, t_end=t_end, ties=ties)
+    rs = _risk_sets(plan; cache=cache, chunk=chunk, cache_bytes=cache_bytes)
+    derivatives = _timing_derivatives(rs)
 
     β, se, ll, converged = _newton(derivatives, p + 1; maxiter=maxiter, tol=tol)
 
     λ0 = exp(β[1])
-    return TimingModelResult(model, β[2:end], [λ0], se[2:end], ll, converged)
+    return TimingModelResult(model, β[2:end], [λ0], se[2:end], ll, converged,
+                             tie_applied)
 end
 
 # =============================================================================
@@ -1094,12 +1881,20 @@ used and the model is fitted by [`fit_obpm`](@ref), returning an
 [`OrdinalBPMResult`](@ref). With `ordinal=false` the observed waiting times
 enter the exponential-baseline interval likelihood of [`fit_timing`](@ref),
 returning a [`TimingModelResult`](@ref). Keyword arguments (`maxiter`, `tol`,
-and for the interval likelihood `t0`) are forwarded to the underlying fitter.
+`ties`, the risk-set cache policy `cache`/`chunk`/`cache_bytes`, and for the
+interval likelihood `t0` and `t_end`) are forwarded to the underlying fitter.
+
+`ties` defaults to `:error` in both, and the two accept **different** policies —
+`:breslow`/`:efron` are defined only for the ordinal partial likelihood,
+`:batch` only for the exact-time one — so a policy forwarded to the wrong
+likelihood is refused with an explanation rather than quietly ignored. See
+[`fit_obpm`](@ref) and [`fit_timing`](@ref).
 
 # Example
 ```julia
 fit_relevent(events, [PShift(:AB_BA), CovSnd(z)], n_actors)                # ordinal
-fit_relevent(events, [PShift(:AB_BA)], n_actors; ordinal=false, t0=0.0)   # timing
+fit_relevent(events, [PShift(:AB_BA)], n_actors; ordinal=false, t0=0.0,
+             t_end=120.0)                                                  # timing
 ```
 """
 function fit_relevent(events::Vector{Event{T}},

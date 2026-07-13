@@ -204,6 +204,32 @@ result = fit_obpm(events, stats, n_actors)
 | Only ordering known | `fit_obpm` |
 | Timestamps unreliable | `fit_obpm` |
 
+### Tied event times
+
+Both fitters take `ties=` and both **default to `:error`**: tied timestamps are named
+and refused, because both likelihoods claim something the tied data does not contain.
+They claim *different* things, so they accept different policies (the shared
+`Networks.TIE_POLICIES` vocabulary), and each refuses the rest with an explanation:
+
+| `ties=` | `fit_obpm` (order) | `fit_timing` (exact time) |
+|---|---|---|
+| `:error` | default | default |
+| `:ordered` | sequence order, no correction | tied events after the first get a zero-length waiting interval |
+| `:breslow` | Breslow correction | **refused** — it corrects a *partial* likelihood |
+| `:efron` | Efron correction (prefer it) | **refused** — same reason |
+| `:batch` | **refused** — with the history frozen it *is* Breslow | one simultaneous batch: history frozen, one exposure interval |
+
+```julia
+fit_obpm(events, stats, n_actors; ties=:efron)     # order unknown within a tie
+fit_timing(events, stats, n_actors; ties=:batch)   # a coarse clock, read as batches
+```
+
+For `fit_timing` this is the sharp case: under the continuous-time process it fits, two
+events at one instant have probability **zero**. A tie is not an ambiguous ordering but
+the model's own assumption failing, and `is_exact(fit)` turns `false` as soon as one is
+present — under every policy. `tie_method(fit)` reports what actually happened (`:none`
+when the data had no ties), and on tie-free data every policy gives the identical fit.
+
 ### Rank Events
 
 Convert events to ordinal ranks:
