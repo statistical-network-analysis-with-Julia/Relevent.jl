@@ -317,6 +317,21 @@ For more detailed documentation, see:
 
 3. Perry, P.O., Wolfe, P.J. (2013). Point process modelling for directed interaction networks. *Journal of the Royal Statistical Society: Series B*, 75(5), 821-849.
 
+## Citation
+
+If you use Relevent.jl in your work, please cite it using the entry in
+[`CITATION.bib`](CITATION.bib):
+
+```biblatex
+@misc{SNWJReleventJL,
+  author = {{Statistical Network Analysis with Julia}},
+  title = {Relevent.jl: Additional Relational Event Model Features for Julia},
+  year = {2026},
+  url = {https://github.com/statistical-network-analysis-with-Julia/Relevent.jl},
+  note = {Homepage: https://statistical-network-analysis-with-Julia.github.io/Relevent.jl; GitHub: https://github.com/statistical-network-analysis-with-Julia}
+}
+```
+
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.

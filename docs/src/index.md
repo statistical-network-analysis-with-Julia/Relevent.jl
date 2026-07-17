@@ -158,6 +158,22 @@ Timing models extend REMs by explicitly modeling inter-event durations using par
 
 4. Stadtfeld, C., Block, P. (2017). Interactions, actors, and time: Dynamic network actor models for relational events. *Sociological Science*, 4, 318-352.
 
+
+## Citation
+
+If you use Relevent.jl in your work, please cite it using the entry in
+[`CITATION.bib`](https://github.com/statistical-network-analysis-with-Julia/Relevent.jl/blob/main/CITATION.bib):
+
+```biblatex
+@misc{SNWJReleventJL,
+  author = {{Statistical Network Analysis with Julia}},
+  title = {Relevent.jl: Additional Relational Event Model Features for Julia},
+  year = {2026},
+  url = {https://github.com/statistical-network-analysis-with-Julia/Relevent.jl},
+  note = {Homepage: https://statistical-network-analysis-with-Julia.github.io/Relevent.jl; GitHub: https://github.com/statistical-network-analysis-with-Julia}
+}
+```
+
 ## Module
 
 ```@docs
