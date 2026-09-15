@@ -157,6 +157,8 @@ rescanning it.
 
 ### Changed
 
+- Documentation uses the default Documenter themes, with a new package-specific
+  SVG icon and browser favicon in the official Julia logo colors.
 - `TimingModelResult` reports the fitted baseline rate λ₀ explicitly;
   `rank_events` and risk-set evaluation warn once on tied timestamps.
 - Baseline hazard/survival functions cover
